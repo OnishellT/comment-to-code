@@ -111,3 +111,11 @@ User approved batching and validated checkpoints before further large-history re
 3. CLI owns .comment-to-code/findings/<inputHash>.json with owner-only directories/files, atomic writes, safe paths and effective gitignore checks. A failed later call must retain validated progress and prior published documents; a resumed run must request only missing findings.
 4. Migrate every model fixture to {findings:[{commentId,...classificationFields}]}; no old single-result alias. Retain strict structural/citation/incident protections and the bounded-memory regression.
 5. Batch and checkpoint slices implement in parallel in this main-based worktree with disjoint ownership. Parent integrates, installs the real artifact, resumes full real captures and judges every promoted rule. Independent PR review and final CI precede merge.
+
+## Issue #11: Copy literal changed-line evidence
+
+Installed v5 runs exposed five quotes that were exact captured patch substrings but omitted the literal changed-line marker. Strict validation correctly rejected both batches; 35 previously validated findings survived in the larger replay.
+
+- Add generic valid/invalid examples and explicit copying guidance for diff markers and indentation. Never normalize model output or fabricate a prefix.
+- Keep the v5 response/eligibility contract and validators unchanged. This format-only guidance does not invalidate findings already validated under that same contract; reuse them on the installed replay.
+- Add the observed missing-marker substring to the existing quotation-rejection regression, then run its focused check once. Pack a separate artifact, verify real checkpoint reuse and actual citations, and request review of this correction before merge.
