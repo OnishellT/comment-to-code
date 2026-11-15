@@ -31,11 +31,12 @@ async function analysis(count = 2) {
   };
   return analyzeCapture(input, { runAgent: async prompt => {
     const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
-    if (data.targetCommentId) return JSON.stringify({
+    if (data.targets) return JSON.stringify({ findings: data.targets.map(target => ({
+      commentId: target.commentId,
       category: 'defect', rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.',
-      resolution: 'Added an explicit guard.', evidence: ['b'.repeat(40), data.pullRequest.comments.find(comment => comment.id === data.targetCommentId).url],
+      resolution: 'Added an explicit guard.', evidence: ['b'.repeat(40), data.pullRequests[0].comments.find(comment => comment.id === target.commentId).url],
       confidence: 'high', status: 'confirmed', outcome: 'verified-fix', codeEvidence: [{ ref: 'b'.repeat(40), path: 'input.js', quote: '+if (value) read(value);' }],
-    });
+    })) });
     return JSON.stringify({ groups: [{ rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ commentIds: [finding.commentId], explanation: 'A distinct defect.' })) }] });
   } });
 }

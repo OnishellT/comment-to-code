@@ -101,3 +101,39 @@ The first complete candidate replay fixed literal references and correctly produ
 3. Advance the prompt contract version and preserve strict validation. Do not introduce a rule without two independently verified incidents.
 4. Preserve the first candidate artifact and report as a real semantic failure. Install a separate revised artifact and replay the same complete capture without a prior-analysis cache; inspect all dispositions and actual documents.
 5. Include both #5 and #6 acceptance evidence and fixture-normalization limits in independent PR review before merge. A literal-format pass alone is not full causal-quality acceptance.
+
+## Bounded, resumable full-history analysis
+
+User approved batching and validated checkpoints before further large-history retries. ADR 0002 is the shared implementation contract.
+
+1. Batch at most 16 sorted pending targets, packing complete distinct PR contexts within maxInputBytes; no context truncation or comment omission. Validate exact target coverage and PR-local code citations before saving a batch.
+2. Add optional loadFinding(inputHash) and saveFindings(findings) analyzer callbacks. Reuse complete previous analyses first, then matching validated checkpoints. Store only findings; reconsolidate current eligible findings once and publish only a complete result.
+3. CLI owns .comment-to-code/findings/<inputHash>.json with owner-only directories/files, atomic writes, safe paths and effective gitignore checks. A failed later call must retain validated progress and prior published documents; a resumed run must request only missing findings.
+4. Migrate every model fixture to {findings:[{commentId,...classificationFields}]}; no old single-result alias. Retain strict structural/citation/incident protections and the bounded-memory regression.
+5. Batch and checkpoint slices implement in parallel in this main-based worktree with disjoint ownership. Parent integrates, installs the real artifact, resumes full real captures and judges every promoted rule. Independent PR review and final CI precede merge.
+
+## Issue #11: Copy literal changed-line evidence
+
+Installed v5 runs exposed five quotes that were exact captured patch substrings but omitted the literal changed-line marker. Strict validation correctly rejected both batches; 35 previously validated findings survived in the larger replay.
+
+- Add generic valid/invalid examples and explicit copying guidance for diff markers and indentation. Never normalize model output or fabricate a prefix.
+- Keep the v5 response/eligibility contract and validators unchanged. This format-only guidance does not invalidate findings already validated under that same contract; reuse them on the installed replay.
+- Add the observed missing-marker substring to the existing quotation-rejection regression, then run its focused check once. Pack a separate artifact, verify real checkpoint reuse and actual citations, and request review of this correction before merge.
+
+## Issue #12: Separate contextual references from observed fixes
+
+Real installed resumes reused 35 findings and advanced to 112/115 saved findings before rejecting reviewed-commit SHAs already present in typed capture metadata and source refs. The contextual reference allowlist was incomplete, not the model's literal reference.
+
+- Include captured base/head, original review commit and source refs in contextual references. Never discover allowed SHAs by scanning arbitrary prose.
+- Keep eligible changed-code records and exact code-quotation validation unchanged. A contextual baseline SHA alone cannot establish an observed fix.
+- Add focused typed-reference acceptance and baseline-only/fabricated-reference rejection coverage. Replay the preserved real failing batches without filesystem writes, then install a separate candidate and resume the complete unchanged captures.
+- Keep compatible already-validated v5 findings: this corrects the implementation of the existing literal-captured-reference contract rather than changing its response schema or recurrence threshold. Obtain incremental independent review and final CI before merge.
+
+## Issue #13: Recognize unified-diff hunk structure
+
+The next installed replay correctly reused 112 findings but rejected a byte-exact added Markdown-list line beginning with adjacent plus/minus signs. The validator's two-character heuristic confused signed changed content with file headers.
+
+- Derive changed lines from unified-diff hunk bodies and reuse them for patch eligibility and citation checks. Do not special-case Markdown filenames or normalize quotes.
+- Preserve exact substring matching and support quoted changed-line prefixes while requiring them to match actual changed hunk lines. Headers/context alone remain ineligible; paired head-source proof remains unchanged.
+- Cover signed added/deleted content and header/context rejection; replay the exact preserved failing native response.
+- Advance the prompt/validation epoch to v6. Matching a real changed-hunk line is stricter than the old substring/sign check, which could admit a sign-prefixed fragment taken from context. Persisted findings do not retain their original code quotations, so old accepted proof cannot be revalidated from those files. Preserve historical v5 artifacts, but do not reuse them as v6 findings.

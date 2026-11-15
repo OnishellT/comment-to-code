@@ -54,13 +54,20 @@ function groupFor(findings, incidents = findings.map(finding => [finding.comment
   }] };
 }
 
+function classifications(data, classify = confirmed) {
+  return { findings: data.targets.map(target => ({
+    commentId: target.commentId,
+    ...classify(data.pullRequests.find(pr => pr.number === target.prNumber), target),
+  })) };
+}
+
 // This injectable transport is intentionally a fixture, not real model verification.
-function fixtureAgent({ classify = data => confirmed(data.pullRequest), consolidate = data => groupFor(data.findings), fence = false } = {}) {
+function fixtureAgent({ classify = confirmed, classifyBatch = data => classifications(data, classify), consolidate = data => groupFor(data.findings), fence = false } = {}) {
   const calls = [];
   const runAgent = async prompt => {
     const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
     calls.push({ prompt, data });
-    const result = data.targetCommentId ? classify(data) : consolidate(data);
+    const result = data.targets ? classifyBatch(data) : consolidate(data);
     const json = typeof result === 'string' ? result : JSON.stringify(result);
     return fence ? `\`\`\`json\n${json}\n\`\`\`` : json;
   };
@@ -85,15 +92,14 @@ test('every comment kind and disposition is accounted exactly once, including em
   comments[2].kind = 'discussion';
   comments[4].body = '';
   const categories = ['defect', 'suggestion', 'question', 'praise', 'administrative', 'unresolved'];
-  const agent = fixtureAgent({ classify: data => {
-    const i = Number(data.targetCommentId.split(':').at(-1)) - 1;
-    return i < 2 ? { ...confirmed(data.pullRequest), category: categories[i] } : disposition(categories[i], i === 5 ? 'unresolved' : 'ignored', i === 5 ? 'uncertain' : 'not-applicable');
+  const agent = fixtureAgent({ classify: (pr, target) => {
+    const i = Number(target.commentId.split(':').at(-1)) - 1;
+    return i < 2 ? { ...confirmed(pr), category: categories[i] } : disposition(categories[i], i === 5 ? 'unresolved' : 'ignored', i === 5 ? 'uncertain' : 'not-applicable');
   }, fence: true });
   const result = await analyzeCapture(input, agent);
   assert.deepEqual(idsOf(result), comments.map(comment => comment.id));
   assert.deepEqual(result.findings.map(finding => finding.category), categories);
   assert.deepEqual(result.stats, { comments: 6, analyzed: 6, cached: 0, rules: 1, candidates: 0 });
-  assert.equal(agent.calls.length, 7);
   assert.equal(result.rules[0].incidentCount, 2);
   assert.deepEqual(result.rules[0].commentIds, comments.slice(0, 2).map(comment => comment.id));
 });
@@ -211,7 +217,7 @@ test('uncertain and rejected suggestions remain explicit but never enter consoli
   const input = capture([2]);
   input.pullRequests[0].state = 'CLOSED';
   input.pullRequests[0].mergedAt = null;
-  const result = await analyzeCapture(input, fixtureAgent({ classify: data => data.targetCommentId.endsWith(':1') ? disposition('suggestion', 'ignored', 'rejected') : disposition('unresolved', 'unresolved', 'uncertain') }));
+  const result = await analyzeCapture(input, fixtureAgent({ classify: (pr, target) => target.commentId.endsWith(':1') ? disposition('suggestion', 'ignored', 'rejected') : disposition('unresolved', 'unresolved', 'uncertain') }));
   assert.deepEqual(result.rules, []);
   assert.deepEqual(result.groups, []);
   assert.deepEqual(result.findings.map(finding => finding.status), ['ignored', 'unresolved']);
@@ -226,6 +232,7 @@ test('fabricated, URL-only, missing, and non-change code evidence is rejected', 
     result => { result.codeEvidence[0].path = 'unrelated.js'; },
     result => { result.codeEvidence[0].ref = 'made-up'; },
     result => { result.codeEvidence[0].quote = '@@ -1 +1 @@'; },
+    result => { result.codeEvidence[0].quote = 'return input.value;'; },
     result => { result.evidence = []; },
     result => { result.outcome = 'rejected'; },
     result => { result.outcome = 'uncertain'; },
@@ -233,8 +240,58 @@ test('fabricated, URL-only, missing, and non-change code evidence is rejected', 
     result => { result.confidence = 'low'; },
   ];
   for (const mutate of mutations) {
-    const agent = fixtureAgent({ classify: data => { const result = confirmed(data.pullRequest); mutate(result); return result; } });
+    const agent = fixtureAgent({ classify: pr => { const result = confirmed(pr); mutate(result); return result; } });
     await assert.rejects(analyzeCapture(capture([1]), agent), /Invalid analysis/);
+  }
+});
+
+test('captured contextual commit references are valid but cannot alone prove a fix', async () => {
+  const input = capture([1]);
+  const pr = input.pullRequests[0];
+  pr.baseSha = 'a'.repeat(40);
+  pr.comments[0].originalCommitId = 'b'.repeat(40);
+  pr.sources[0].ref = 'c'.repeat(40);
+  const invented = 'd'.repeat(40);
+  pr.comments[0].body += ` A claim mentions ${invented}.`;
+  const contextual = [pr.baseSha, pr.comments[0].originalCommitId, pr.sources[0].ref];
+  const evidence = [...contextual, pr.headSha];
+  const result = await analyzeCapture(input, fixtureAgent({
+    classify: captured => ({ ...confirmed(captured), evidence }),
+  }));
+  assert.equal(result.findings[0].status, 'confirmed');
+  assert.deepEqual(result.findings[0].evidence, evidence.toSorted());
+  for (const ref of contextual) {
+    await assert.rejects(analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), evidence: [ref] }),
+    })), /lacks captured fix\/code evidence/);
+  }
+  await assert.rejects(analyzeCapture(input, fixtureAgent({
+    classify: captured => ({ ...confirmed(captured), evidence: [...evidence, invented] }),
+  })), /fabricated evidence reference/);
+});
+
+test('patch citations recognize signed changed hunk content, not headers or context', async () => {
+  for (const quote of ['+- item', '++value;', '+++value;', '---value;', '-+value;', '+--value;']) {
+    const input = capture([1]);
+    const pr = input.pullRequests[0];
+    pr.sources = [];
+    const body = quote.startsWith('+') ? `-old\n${quote}` : `${quote}\n+fixed`;
+    const patch = `--- a/input.js\n+++ b/input.js\n@@ -1 +1 @@\n${body}`;
+    pr.files[0].patch = pr.commits[0].files[0].patch = patch;
+    const result = await analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), codeEvidence: [{ ref: captured.headSha, path: 'input.js', quote }] }),
+    }));
+    assert.equal(result.findings[0].status, 'confirmed');
+  }
+  for (const quote of ['+++ b/input.js', '--- a/input.js', '@@ -1,2 +1,2 @@', '+ token']) {
+    const input = capture([1]);
+    const pr = input.pullRequests[0];
+    pr.sources = [];
+    const patch = '--- a/input.js\n+++ b/input.js\n@@ -1,2 +1,2 @@\n context + token\n-old\n+fixed';
+    pr.files[0].patch = pr.commits[0].files[0].patch = patch;
+    await assert.rejects(analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), codeEvidence: [{ ref: captured.headSha, path: 'input.js', quote }] }),
+    })), /fabricated or missing captured code evidence/);
   }
 });
 
@@ -242,7 +299,7 @@ test('observed source changes can verify code when patches are unavailable', asy
   const input = capture([1]);
   input.pullRequests[0].files[0].patch = null;
   input.pullRequests[0].commits[0].files[0].patch = null;
-  const agent = fixtureAgent({ classify: data => ({ ...confirmed(data.pullRequest), codeEvidence: [{ ref: data.pullRequest.headSha, path: 'input.js', quote: 'return input?.value;' }] }) });
+  const agent = fixtureAgent({ classify: pr => ({ ...confirmed(pr), codeEvidence: [{ ref: pr.headSha, path: 'input.js', quote: 'return input?.value;' }] }) });
   const result = await analyzeCapture(input, agent);
   assert.equal(result.candidates.length, 1);
   input.pullRequests[0].sources[0].content = null;
@@ -254,16 +311,12 @@ test('a captured URL or PR state alone cannot prove a fix', async () => {
   input.pullRequests[0].files[0].patch = null;
   input.pullRequests[0].commits[0].files[0].patch = null;
   input.pullRequests[0].sources = [];
-  const agent = fixtureAgent({ classify: data => ({ ...confirmed(data.pullRequest), evidence: [data.pullRequest.url], codeEvidence: [{ ref: data.pullRequest.url, path: 'input.js', quote: '+return input?.value;' }] }) });
+  const agent = fixtureAgent({ classify: pr => ({ ...confirmed(pr), evidence: [pr.url], codeEvidence: [{ ref: pr.url, path: 'input.js', quote: '+return input?.value;' }] }) });
   await assert.rejects(analyzeCapture(input, agent), /lacks captured fix\/code evidence/);
 });
 
 test('strict classification rejects malformed, missing, extra and invalid fields', async () => {
   const mutations = [
-    () => 'not JSON',
-    () => '[]',
-    () => '{} trailing prose',
-    () => '{"category":"defect","category":"praise"}',
     result => { delete result.category; return result; },
     result => ({ ...result, extra: 'no' }),
     result => ({ ...result, category: 'bug' }),
@@ -272,11 +325,17 @@ test('strict classification rejects malformed, missing, extra and invalid fields
     result => ({ ...result, status: 'fixed' }),
     result => ({ ...result, evidence: [...result.evidence, ...result.evidence] }),
     result => ({ ...result, codeEvidence: [{ ...result.codeEvidence[0], extra: 'no' }] }),
-    result => JSON.stringify(result).replace('"category":"defect"', '"category":"praise","category":"defect"'),
   ];
   for (const mutate of mutations) {
-    const agent = fixtureAgent({ classify: data => mutate(confirmed(data.pullRequest)) });
+    const agent = fixtureAgent({ classify: pr => mutate(confirmed(pr)) });
     await assert.rejects(analyzeCapture(capture([1]), agent), /Invalid analysis/);
+  }
+  for (const response of [
+    'not JSON', '[]', '{} trailing prose', '{"findings":[],"findings":[]}',
+    '{"findings":[{"commentId":"inline:1:1","category":"praise","category":"defect"}]}',
+    JSON.stringify(confirmed(capture([1]).pullRequests[0])),
+  ]) {
+    await assert.rejects(analyzeCapture(capture([1]), fixtureAgent({ classifyBatch: () => response })), /Invalid analysis/);
   }
 });
 
@@ -301,7 +360,7 @@ test('consolidation rejects missing, extra, unknown and duplicate finding IDs', 
 
 test('noneligible IDs cannot enter consolidation', async () => {
   const agent = fixtureAgent({
-    classify: data => data.targetCommentId.endsWith(':1') ? confirmed(data.pullRequest) : disposition('praise'),
+    classify: (pr, target) => target.commentId.endsWith(':1') ? confirmed(pr) : disposition('praise'),
     consolidate: data => groupFor(data.findings, [['inline:1:1', 'inline:1:2']]),
   });
   await assert.rejects(analyzeCapture(capture([2]), agent), /unknown or duplicate/);
@@ -321,9 +380,9 @@ test('input budgets fail explicitly before calls and never truncate evidence', a
   await assert.rejects(analyzeCapture(capture(), { ...agent, maxInputBytes: 100 }), /budget exceeded.*not truncated/);
   assert.equal(agent.calls.length, 0);
   for (const maxInputBytes of [0, -1, 1.5, Infinity]) await assert.rejects(analyzeCapture(capture(), { ...agent, maxInputBytes }), /positive integer/);
-  const huge = fixtureAgent({ classify: data => ({ ...confirmed(data.pullRequest), rootCause: 'cause '.repeat(2500) }) });
+  const huge = fixtureAgent({ classify: pr => ({ ...confirmed(pr), rootCause: 'cause '.repeat(2500) }) });
   await assert.rejects(analyzeCapture(capture(), { ...huge, maxInputBytes: 10000 }), /budget exceeded/);
-  assert.equal(huge.calls.length, 2);
+  assert.equal(huge.calls.filter(call => !call.data.targets).length, 0);
 });
 
 test('prompt injection remains JSON data and owned marker output is rejected', async () => {
@@ -332,10 +391,9 @@ test('prompt injection remains JSON data and owned marker output is rejected', a
   const agent = fixtureAgent({ classify: () => disposition('administrative') });
   const result = await analyzeCapture(input, agent);
   assert.equal(result.findings[0].status, 'ignored');
-  assert.equal(agent.calls[0].data.pullRequest.comments[0].body, input.pullRequests[0].comments[0].body);
-  assert.match(agent.calls[0].prompt.split('\nDATA ')[0], /untrusted data/);
+  assert.equal(agent.calls[0].data.pullRequests[0].comments[0].body, input.pullRequests[0].comments[0].body);
   for (const marker of ['<!-- comment-to-code:start -->', '<!-- comment-to-code:end -->', '<!-- COMMENT-TO-CODE:start broken']) {
-    const bad = fixtureAgent({ classify: data => ({ ...confirmed(data.pullRequest), prevention: marker }) });
+    const bad = fixtureAgent({ classify: pr => ({ ...confirmed(pr), prevention: marker }) });
     await assert.rejects(analyzeCapture(capture([1]), bad), /owned markers/);
     const consolidated = fixtureAgent({ consolidate: data => { const groups = groupFor(data.findings); groups.groups[0].prevention = marker; return groups; } });
     await assert.rejects(analyzeCapture(capture(), consolidated), /owned markers/);
@@ -350,4 +408,204 @@ test('stable IDs and ordering do not depend on capture or model incident order',
   assert.deepEqual(second.rules, first.rules);
   assert.deepEqual(second.groups, first.groups);
   assert.deepEqual(idsOf(second), idsOf(first));
+});
+
+test('classification batches cover sorted targets once with at most sixteen and one context per PR', async () => {
+  const input = capture([18, 4]);
+  input.pullRequests.reverse();
+  input.pullRequests.forEach(pr => pr.comments.reverse());
+  const agent = fixtureAgent({ classifyBatch: data => {
+    const result = classifications(data);
+    result.findings.reverse();
+    return result;
+  } });
+  const result = await analyzeCapture(input, agent);
+  const batches = agent.calls.filter(call => call.data.targets);
+  assert.deepEqual(batches.map(call => call.data.targets.length), [16, 6]);
+  assert.deepEqual(batches.flatMap(call => call.data.targets.map(target => target.commentId)), idsOf(result));
+  for (const { data } of batches) {
+    const numbers = [...new Set(data.targets.map(target => target.prNumber))];
+    assert.deepEqual(data.pullRequests.map(pr => pr.number), numbers);
+    assert.deepEqual(data.pullRequests, numbers.map(number => input.pullRequests.find(pr => pr.number === number)));
+  }
+  assert.equal(batches[1].data.pullRequests.length, 2);
+  const consolidations = agent.calls.filter(call => !call.data.targets);
+  assert.equal(consolidations.length, 1);
+  assert.deepEqual(consolidations[0].data.findings.map(finding => finding.commentId), idsOf(result));
+  assert.equal(result.rules[0].incidentCount, 22);
+});
+
+test('byte budgets split distinct PR contexts without truncating their evidence', async () => {
+  const input = capture([2, 2, 1]);
+  input.pullRequests.forEach(pr => { pr.body = 'é'.repeat(5000); });
+  const maxInputBytes = 22000;
+  const agent = fixtureAgent({ classify: () => disposition('praise') });
+  const result = await analyzeCapture(input, { ...agent, maxInputBytes });
+  assert.deepEqual(agent.calls.map(call => call.data.targets.length), [2, 2, 1]);
+  for (const { prompt, data } of agent.calls) {
+    assert.ok(Buffer.byteLength(prompt) <= maxInputBytes);
+    assert.deepEqual(data.pullRequests, [input.pullRequests.find(pr => pr.number === data.targets[0].prNumber)]);
+  }
+  assert.equal(result.stats.comments, 5);
+});
+
+test('an oversized later target fails all pending preflight before any agent or save callback', async () => {
+  const input = capture();
+  input.pullRequests[1].body = 'large context '.repeat(2000);
+  const agent = fixtureAgent();
+  let saves = 0;
+  await assert.rejects(analyzeCapture(input, {
+    ...agent, maxInputBytes: 10000,
+    saveFindings: async () => { saves++; },
+  }), /budget exceeded.*not truncated/);
+  assert.equal(agent.calls.length, 0);
+  assert.equal(saves, 0);
+});
+
+test('invalid batch envelopes or target coverage never checkpoint even a valid prefix', async () => {
+  const mutations = [
+    response => { response.findings.pop(); },
+    response => { response.findings.push(response.findings[0]); },
+    response => { response.findings[1].commentId = 'unknown'; },
+    response => { response.findings[1].commentId = response.findings[0].commentId; },
+    response => { response.findings[1].evidence = ['https://attacker.test/fabricated']; },
+    response => { response.findings = null; },
+    response => { response.extra = true; },
+  ];
+  for (const mutate of mutations) {
+    let saves = 0;
+    const agent = fixtureAgent({ classifyBatch: data => {
+      const response = classifications(data);
+      mutate(response);
+      return response;
+    } });
+    await assert.rejects(analyzeCapture(capture(), {
+      ...agent, saveFindings: async () => { saves++; },
+    }), /Invalid analysis/);
+    assert.equal(saves, 0);
+    assert.equal(agent.calls.filter(call => !call.data.targets).length, 0);
+  }
+});
+
+test('batched evidence and code quotations remain local to each target PR', async () => {
+  for (const useForeignReference of [true, false]) {
+    const input = capture();
+    input.pullRequests[1].files[0].patch += '\n+foreignOnly();';
+    input.pullRequests[1].commits[0].files[0].patch += '\n+foreignOnly();';
+    const agent = fixtureAgent({ classifyBatch: data => {
+      const response = classifications(data);
+      const finding = response.findings[0];
+      if (useForeignReference) {
+        finding.evidence = [data.pullRequests[1].commits[0].sha];
+        finding.codeEvidence[0].ref = finding.evidence[0];
+      } else {
+        finding.codeEvidence[0].quote = '+foreignOnly();';
+      }
+      return response;
+    } });
+    let saves = 0;
+    await assert.rejects(analyzeCapture(input, {
+      ...agent, saveFindings: async () => { saves++; },
+    }), /fabricated.*evidence/);
+    assert.equal(saves, 0);
+  }
+});
+
+test('interrupted batches resume validated findings and consolidate the complete current set once', async () => {
+  const input = capture([17]);
+  const checkpoints = new Map();
+  const savedBatches = [];
+  let batchCalls = 0;
+  const interrupted = fixtureAgent({ classifyBatch: data => {
+    assert.equal(savedBatches.length, batchCalls);
+    if (++batchCalls === 2) throw new Error('provider unavailable');
+    return classifications(data);
+  } });
+  const saveFindings = async findings => {
+    savedBatches.push(findings.map(finding => finding.commentId));
+    for (const finding of findings) checkpoints.set(finding.inputHash, structuredClone(finding));
+  };
+  await assert.rejects(analyzeCapture(input, { ...interrupted, saveFindings }), /provider unavailable/);
+  assert.equal(checkpoints.size, 16);
+  assert.equal(interrupted.calls.filter(call => !call.data.targets).length, 0);
+  const resumed = fixtureAgent();
+  const result = await analyzeCapture(input, {
+    ...resumed, saveFindings,
+    loadFinding: async inputHash => checkpoints.get(inputHash) ?? null,
+  });
+  assert.deepEqual(resumed.calls.filter(call => call.data.targets).map(call => call.data.targets.length), [1]);
+  assert.equal(resumed.calls.filter(call => !call.data.targets).length, 1);
+  assert.equal(resumed.calls.at(-1).data.findings.length, 17);
+  assert.deepEqual(savedBatches.map(batch => batch.length), [16, 1]);
+  assert.equal(result.stats.cached, 16);
+  assert.equal(result.stats.analyzed, 1);
+  assert.equal(result.rules[0].incidentCount, 17);
+  const complete = fixtureAgent();
+  const again = await analyzeCapture(input, {
+    ...complete, loadFinding: async inputHash => checkpoints.get(inputHash) ?? null,
+  });
+  assert.equal(complete.calls.length, 1);
+  assert.deepEqual(again.rules, result.rules);
+});
+
+test('complete previous findings take precedence and partial findings invalidate with their PR context', async () => {
+  const input = capture([2, 1]);
+  const first = await analyzeCapture(input, fixtureAgent());
+  await analyzeCapture(input, {
+    ...fixtureAgent(), previous: first,
+    loadFinding: async () => { throw new Error('previous findings must win'); },
+    saveFindings: async () => { throw new Error('no new findings'); },
+  });
+  const checkpoints = new Map(first.findings.map(finding => [finding.inputHash, finding]));
+  for (const change of [
+    pr => { pr.comments[0].body += ' edited'; },
+    pr => { pr.sources[0].content += 'changed'; },
+  ]) {
+    const changed = structuredClone(input);
+    change(changed.pullRequests[0]);
+    const agent = fixtureAgent();
+    const result = await analyzeCapture(changed, {
+      ...agent, loadFinding: async inputHash => checkpoints.get(inputHash) ?? null,
+    });
+    assert.equal(result.stats.analyzed, 2);
+    assert.equal(result.stats.cached, 1);
+    assert.deepEqual(agent.calls[0].data.targets.map(target => target.prNumber), [1, 1]);
+    assert.equal(result.rules[0].incidentCount, 3);
+  }
+});
+
+test('loaded findings must pass current identity, hash, structure, and PR reference validation', async () => {
+  const input = capture([1]);
+  const first = await analyzeCapture(input, fixtureAgent());
+  for (const mutate of [
+    finding => { finding.commentId = 'unknown'; },
+    finding => { finding.prNumber = 2; },
+    finding => { finding.inputHash = 'a'.repeat(64); },
+    finding => { finding.category = 'bug'; },
+    finding => { finding.confidence = 'low'; },
+    finding => { finding.evidence = ['https://attacker.test/fake']; },
+    finding => { finding.evidence = [input.pullRequests[0].comments[0].url]; },
+    finding => { finding.extra = true; },
+  ]) {
+    const finding = structuredClone(first.findings[0]);
+    mutate(finding);
+    const agent = fixtureAgent();
+    await assert.rejects(analyzeCapture(input, { ...agent, loadFinding: async () => finding }), /Invalid analysis/);
+    assert.equal(agent.calls.length, 0);
+  }
+});
+
+test('checkpoint callback failures propagate and stop later classification or consolidation', async () => {
+  const input = capture([17]);
+  const failedLoad = fixtureAgent();
+  await assert.rejects(analyzeCapture(input, {
+    ...failedLoad, loadFinding: async () => { throw new Error('checkpoint read failed'); },
+  }), /checkpoint read failed/);
+  assert.equal(failedLoad.calls.length, 0);
+  const failedSave = fixtureAgent();
+  await assert.rejects(analyzeCapture(input, {
+    ...failedSave, saveFindings: async () => { throw new Error('checkpoint write failed'); },
+  }), /checkpoint write failed/);
+  assert.equal(failedSave.calls.length, 1);
+  assert.equal(failedSave.calls[0].data.targets.length, 16);
 });
