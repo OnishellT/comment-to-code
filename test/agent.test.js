@@ -70,6 +70,19 @@ for (const agent of ['omp', 'claude', 'codex']) {
   });
 }
 
+test('Codex accepts large context and returns only the final response', async t => {
+  const final = '{"findings":[]}';
+  const f = await fixture(t, `if(!args.includes('--json')) process.stderr.write(stdin); fs.writeFileSync(args[args.indexOf('--output-last-message')+1],${JSON.stringify(final)}); process.stdout.write(JSON.stringify({type:'item.completed',item:{text:'not the final response'}})+'\\n');`);
+  const prompt = 'Captured review context\\n'.repeat(4096);
+  assert.equal(await runAgentPrompt('codex', prompt), final);
+  assert.equal((await f.calls()).at(-1).stdin, prompt);
+});
+
+test('Codex still rejects oversized diagnostics', async t => {
+  await fixture(t, "process.stderr.write('x'.repeat(65537)); fs.writeFileSync(args[args.indexOf('--output-last-message')+1],'not accepted');");
+  await assert.rejects(runAgentPrompt('codex', 'context'), /stderr limit/);
+});
+
 test('rejects invalid Claude result envelope and oversized output', async t => {
   await fixture(t, "process.stdout.write(process.argv[1].endsWith('/claude') ? '{\"type\":\"result\",\"is_error\":true,\"result\":\"oops\"}' : 'x'.repeat(9*1024*1024));");
   await assert.rejects(runAgentPrompt('claude', 'prompt'), /successful text result/);
