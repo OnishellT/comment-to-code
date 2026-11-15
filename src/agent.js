@@ -104,7 +104,7 @@ export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 
       await copyCredential(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json'), join(config, 'auth.json'));
       env.CODEX_HOME = config;
       outputFile = join(temporary, 'last-message.txt');
-      args = ['--no-daemon', '--ask-for-approval', 'never', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outputFile];
+      args = ['--no-daemon', '--ask-for-approval', 'never', 'exec', '--json', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outputFile];
       const disabled = ['shell_tool', 'unified_exec', 'code_mode', 'code_mode_host', 'code_mode_only', 'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2', 'browser_use', 'computer_use', 'image_generation', 'view_image', 'memories', 'skill_search', 'skill_mcp_dependency_install', 'tool_suggest', 'sleep_tool'];
       for (const feature of disabled) args.push('--disable', feature);
       args.push('--enable', 'skip_host_skill_discovery');

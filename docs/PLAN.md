@@ -137,3 +137,12 @@ The next installed replay correctly reused 112 findings but rejected a byte-exac
 - Preserve exact substring matching and support quoted changed-line prefixes while requiring them to match actual changed hunk lines. Headers/context alone remain ineligible; paired head-source proof remains unchanged.
 - Cover signed added/deleted content and header/context rejection; replay the exact preserved failing native response.
 - Advance the prompt/validation epoch to v6. Matching a real changed-hunk line is stricter than the old substring/sign check, which could admit a sign-prefixed fragment taken from context. Persisted findings do not retain their original code quotations, so old accepted proof cannot be revalidated from those files. Preserve historical v5 artifacts, but do not reuse them as v6 findings.
+
+## Issue #14: Use Codex's machine-output protocol
+
+Native Codex human output echoes the complete prompt to stderr, crossing the existing 64 KiB diagnostic bound before analysis. A preserved actual stderr trace establishes the cause.
+
+- Select supported exec --json events while continuing to read only --output-last-message for the final response. Keep all isolation, no-tools/read-only settings and resource bounds unchanged.
+- Add a behavioral regression for a full input larger than the stderr bound and exact final-response extraction, plus independent oversized-stderr rejection. Observe the large-input regression fail before changing the adapter.
+- No truncation, diagnostic discarding, raised limits, fallback, new configuration, or cache-epoch change. This changes transport formatting, not the classifier/evidence contract.
+- Run focused adapter checks, install a separate artifact and resume the unchanged complete captures. Passing the subprocess boundary is not complete-history success. Require independent review and green CI before merge.
