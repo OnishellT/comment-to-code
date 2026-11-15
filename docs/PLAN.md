@@ -26,7 +26,7 @@ ESM named exports; standard library only. Every async operation throws actionabl
 
 `PR = { number, title, body, url, state, mergedAt, baseSha, headSha, comments: Comment[], commits: Commit[], files: FileChange[], sources: Source[], limitations: string[] }`.
 
-`Comment = { id: string, kind: 'discussion'|'review'|'inline', body: string, url: string, author: string|null, createdAt: string, updatedAt: string, threadId: string, path: string|null, line: number|null, originalCommitId: string|null, diffHunk: string|null }`. IDs include type to avoid cross-endpoint collisions. Inline replies share the root comment's threadId. Review/discussion identifiers must not collide. Empty review bodies are captured as comments for accounting.
+`Comment = { id: string, kind: 'discussion'|'review'|'inline', body: string, url: string, author: string|null, createdAt: string|null, updatedAt: string|null, threadId: string, path: string|null, line: number|null, originalCommitId: string|null, diffHunk: string|null, reviewState?: string|null }`. IDs include type to avoid cross-endpoint collisions. Inline replies share the root comment's threadId. Review/discussion identifiers must not collide. Empty and pending review bodies are captured for accounting; missing submission timestamps remain null with an explicit limitation. Review state and commit_id should be preserved when available, not inferred.
 
 `Commit = { sha, message, authoredAt, files: FileChange[], limitations: string[] }`.
 
@@ -58,7 +58,7 @@ The consolidation pass partitions all eligible findings exactly once into root-c
 
 ### agent.js
 
-`runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 } = {}) -> Promise<string>` supports exactly omp|claude|codex. Create temporary isolated cwd outside the project; disable tools, skills, project instructions, extensions/MCP where supported. No permission/sandbox bypass flags. Send prompt via stdin, never argv/shell. Use ephemeral sessions and remove temporary artifacts. Capture stderr for actionable errors without leaking auth. Parse provider envelopes in runner; analyze.js validates model JSON. OMP text mode; Claude JSON result envelope; Codex final output file. Explicitly document limits of provider isolation; never claim a sandbox that is not configured.
+`runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 } = {}) -> Promise<string>` supports exactly omp|claude|codex. Create temporary isolated cwd outside the project; disable tools, skills, project instructions, extensions/MCP where supported. Codex exec has no global no-tools switch: disable optional execution tools, ignore user config/rules, use read-only sandbox and never-approve policy; document residual registered tools rather than hacking model metadata. No permission/sandbox bypass flags. Send prompt via stdin, never argv/shell. Use ephemeral sessions and remove temporary artifacts. Capture stderr for actionable errors without leaking auth. Parse provider envelopes in runner; analyze.js validates model JSON. OMP text mode; Claude JSON result envelope; Codex final output file. Explicitly document limits of provider isolation; never claim a sandbox that is not configured.
 
 ### CLI and installation
 
