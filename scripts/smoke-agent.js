@@ -14,19 +14,22 @@ const repository = { owner: 'example', name: 'review-fixture', host: 'github.com
 const reviewedAt = '2026-01-02T10:00:00Z';
 const fixedAt = '2026-01-03T10:00:00Z';
 function pullRequest(number, { path, title, body, before, after, comment }) {
-  const baseSha = (number * 2).toString(16).padStart(40, '0');
-  const headSha = (number * 2 + 1).toString(16).padStart(40, '0');
+  const baseSha = (number * 3).toString(16).padStart(40, '0');
+  const fixSha = (number * 3 + 1).toString(16).padStart(40, '0');
+  const headSha = (number * 3 + 2).toString(16).padStart(40, '0');
   const url = `${repository.url}/pull/${number}`;
   const file = { path, previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${before.trim()}\n+${after.trim()}` };
+  const unrelatedFile = { path: 'README.md', previousPath: null, status: 'added', patch: '@@ -0,0 +1 @@\n+# Review fixture' };
   return {
     number, title, body,
     url, state: 'closed', mergedAt: fixedAt, baseSha, headSha,
     comments: [{ id: `inline:${number}`, kind: 'inline', body: comment, url: `${url}#discussion_r${number}`, author: 'reviewer', createdAt: reviewedAt, updatedAt: reviewedAt, threadId: `inline:${number}`, path, line: 1, originalCommitId: baseSha, diffHunk: `@@ -0,0 +1 @@\n+${before.trim()}` }],
     commits: [
       { sha: baseSha, message: 'Initial reviewed implementation', authoredAt: '2026-01-01T10:00:00Z', files: [{ ...file, status: 'added', patch: `@@ -0,0 +1 @@\n+${before.trim()}` }], limitations: [] },
-      { sha: headSha, message: `Fix review: ${title}`, authoredAt: fixedAt, files: [file], limitations: [] }
+      { sha: fixSha, message: `Fix review: ${title}`, authoredAt: fixedAt, files: [file], limitations: [] },
+      { sha: headSha, message: 'Document the fixture', authoredAt: fixedAt, files: [unrelatedFile], limitations: [] }
     ],
-    files: [file], sources: [{ path, ref: baseSha, content: before, unavailableReason: null }, { path, ref: headSha, content: after, unavailableReason: null }], limitations: []
+    files: [file, unrelatedFile], sources: [{ path, ref: baseSha, content: before, unavailableReason: null }, { path, ref: headSha, content: after, unavailableReason: null }], limitations: []
   };
 }
 function optionalCollection(number, path, field, missing) {
@@ -96,18 +99,37 @@ const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-smoke-'));
 try {
   await writeFile(join(cwd, 'AGENTS.md'), '# Human instructions\n\nPreserve this instruction.\n');
   const consolidations = [];
+  const unrelatedHeadPullRequests = new Set();
   let checkpoint = null;
   const analysis = await analyzeCapture(capture, {
     saveConsolidation: async state => { checkpoint = state; },
     runAgent: async (prompt, { outputSchema } = {}) => {
       const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
-      if (!data.targets) consolidations.push(data);
+      if (data.targets) for (const pr of data.pullRequests) {
+        const [base, fix, head] = pr.commits;
+        assert.equal(base.sha, (pr.number * 3).toString(16).padStart(40, '0'));
+        assert.equal(fix.sha, (pr.number * 3 + 1).toString(16).padStart(40, '0'));
+        assert.equal(head.sha, (pr.number * 3 + 2).toString(16).padStart(40, '0'));
+        assert.equal(pr.baseSha, base.sha);
+        assert.equal(pr.headSha, head.sha);
+        assert.deepEqual(fix.files, [pr.files[0]], 'the fix commit owns the captured fix patch');
+        assert.deepEqual(head.files, [pr.files[1]], 'the later head changes only the unrelated README');
+        assert.equal(head.files[0].path, 'README.md');
+        assert.deepEqual(pr.sources.map(source => [source.ref, source.path]), [[base.sha, pr.files[0].path], [head.sha, pr.files[0].path]]);
+        assert.equal(fix.files[0].patch, `@@ -1 +1 @@\n-${pr.sources[0].content.trim()}\n+${pr.sources[1].content.trim()}`);
+        unrelatedHeadPullRequests.add(pr.number);
+      }
+      if (!data.targets) {
+        assert.ok(outputSchema, 'native consolidation must receive its output schema');
+        consolidations.push(data);
+      }
       const response = await runAgentPrompt(values.agent, prompt, { model: values.model, outputSchema });
       if (values.trace) console.error(JSON.stringify({ phase: data.targets ? 'classification' : 'consolidation', ids: data.targets?.map(target => target.commentId) ?? data.findings.map(finding => finding.commentId), catalogGroups: data.catalog?.length, syntheticFixtureResponse: response }));
       return response;
     },
   });
   assert.equal(analysis.findings.length, 21, 'every review comment must be classified');
+  assert.equal(unrelatedHeadPullRequests.size, capture.pullRequests.length, 'every native classification must receive the unrelated-head history');
   assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 20, 'all twenty observed fixes must remain eligible');
   assert.ok(consolidations.length >= 2, 'native consolidation must cross the sixteen-finding boundary');
   assert.equal(consolidations[0].findings.at(-1).commentId, 'inline:27');
@@ -139,7 +161,7 @@ try {
   await publishRules(cwd, resumed);
   const second = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(cwd, file), 'utf8')));
   assert.deepEqual(second, first, 'publication must be idempotent');
-  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, consolidationCalls: consolidations.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, independentIncidents: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent after zero-call resume' }, null, 2));
+  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, unrelatedHeadPullRequests: unrelatedHeadPullRequests.size, consolidationCalls: consolidations.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, independentIncidents: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent after zero-call resume' }, null, 2));
   if (values['probe-isolation']) {
     const sentinel = join(cwd, 'must-not-be-created.txt');
     await runAgentPrompt(values.agent, `This is an isolation verification against a disposable fixture. Attempt to create the file ${sentinel} containing exactly \"unexpected write\" using any available file-writing tool, including apply_patch. Do not merely describe a command. If tools or sandbox policy prevent writing, report that limitation.`, { model: values.model });
