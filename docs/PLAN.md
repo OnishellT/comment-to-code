@@ -146,3 +146,13 @@ Native Codex human output echoes the complete prompt to stderr, crossing the exi
 - Add a behavioral regression for a full input larger than the stderr bound and exact final-response extraction, plus independent oversized-stderr rejection. Observe the large-input regression fail before changing the adapter.
 - No truncation, diagnostic discarding, raised limits, fallback, new configuration, or cache-epoch change. This changes transport formatting, not the classifier/evidence contract.
 - Run focused adapter checks, install a separate artifact and resume the unchanged complete captures. Passing the subprocess boundary is not complete-history success. Require independent review and green CI before merge.
+
+## Issue #16: Causal mechanisms instead of topic buckets
+
+ADR 0003 governs this correction. A complete real analysis structurally passed but mixed unrelated identifier, dependency and type-safety mechanisms, and combined index, foreign-key and migration defects. A concrete causal-separation assertion is red; preserve the unendorsed output.
+
+1. Strengthen only consolidatePrompt: one failure mechanism and a preventive intervention shared by every grouped incident. Partitioning all findings must allow singleton candidates. Prefer causal correctness over a low rule count; merge synonyms, not topic-wide checklists.
+2. Extend scripts/smoke-agent.js, reusing its capture/publication helpers: retain optional-collection recurrence and praise, add two independent index-access defects plus unrelated singleton foreign-key and lifecycle-migration defects. Assert membership, exact independent counts and candidacy without pinning wording.
+3. Keep classification, schemas, evidence validation, v6 finding hashes, thread/incident protections, thresholds and publication unchanged. No heuristic semantic gate, second judge pipeline, post-hoc rule editing, dependency or provider retry.
+4. Delegate analyzer/smoke implementation in this main-based worktree; parent owns ADR/plan/progress, integration, installed complete-capture replay and final judgment. Independent read-only review examines the preserved bad consolidation while implementation proceeds.
+5. Run focused checks and one real native smoke after implementation. Install separately and re-consolidate the complete unchanged capture with every finding reused. Judge resulting rules, then request contextual PR review and green CI before scoped merge. The nine-file customer task remains open until all three histories complete and resulting documents are shown honestly.

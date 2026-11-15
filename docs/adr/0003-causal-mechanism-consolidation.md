@@ -1,0 +1,20 @@
+# ADR 0003: Consolidate mechanisms, not topics
+
+Status: accepted implementation decision; real-history semantic acceptance pending.
+
+## Context
+
+The first complete large-history output passed comment accounting and structural checks but promoted topic-wide checklists. Unrelated naming, dependency and type-safety defects became one cause; index access paths, foreign-key retention and lifecycle migrations became another. Broad grouping manufactured recurrence for one-off safeguards. The unendorsed complete artifact and a failing separation assertion are preserved privately.
+
+## Decisions
+
+- Define a cause by the failure mechanism and the preventive intervention that addresses every independent incident in that group. A shared language, subsystem, file, convention or quality topic is insufficient.
+- Require the same prevention to explain all grouped incidents without adding unrelated clauses. Merge synonyms, not distinct mechanisms. A conjunction is not automatically invalid, but it cannot disguise a checklist of separate safeguards.
+- Partition all eligible findings without forcing them into recurring groups. Single incidents remain candidates; a singleton must not be promoted by joining an unrelated incident. Fewer rules are desirable only after causal correctness.
+- Keep the existing one-pass consolidation architecture and response schema. Strengthen its instruction contract and opt-in native semantic smoke rather than adding a semantic judge pipeline, heuristics, keyword gates or dependencies.
+- Preserve per-comment classification, validated findings and the v6 cache epoch. Consolidation is always recomputed from the complete eligible set; this change does not alter previously validated comment evidence.
+- Keep strict source citations, independent-defect/thread deduplication, two-incident promotion, complete-only publication and human-content preservation unchanged. Never repair generated Markdown to conceal producer failures.
+
+## Verification and limits
+
+Extend the real-agent smoke with recurring index-access defects and unrelated singleton database defects alongside the existing recurring optional-collection defects and praise. Assert group membership and singleton candidacy, not wording. Re-consolidate the unchanged complete real capture with all findings reused, then judge resulting rules and evidence. Structural validation and a small fixture cannot prove full-history semantic correctness.
