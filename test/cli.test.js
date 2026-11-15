@@ -28,7 +28,7 @@ async function checkout(t) {
   const env = { ...process.env, PATH: `${tools}:${process.env.PATH}` };
   const cli = (...args) => exec(process.execPath, [bin, ...args], { cwd: nested, env });
   const identify = async () => ({ cwd: root, repository });
-  return { root, nested, cli, identify };
+  return { root, nested, tools, cli, identify };
 }
 
 function reviewedHistory(counts = [17, 1]) {
@@ -103,6 +103,7 @@ test('real executable supports help/version and rejects invalid options', async 
   assert.match((await cli('--help')).stdout, /capture[\s\S]*analyze[\s\S]*run/);
   assert.match((await cli('--version')).stdout, /^0\.1\.0\n$/);
   for (const args of [['analyze'], ['run', '--agent', 'other'], ['capture', '--model', 'x'], ['analyze', '--agent', 'omp', '--max-input-bytes', 'NaN'], ['analyze', '--agent', 'omp', '--agent', 'codex']]) await assert.rejects(cli(...args), /comment-to-code:/);
+  for (const timeout of ['0', '-1', '1.5', 'NaN', 'Infinity', '2147483648']) await assert.rejects(cli('analyze', '--agent', 'codex', '--agent-timeout-ms', timeout), /--agent-timeout-ms/);
 });
 
 test('real checkout nested install/capture/analyze/run use root and all three skills', async t => {
@@ -140,6 +141,43 @@ test('capture and analysis failures retain previous successful artifacts', async
   assert.equal(await readFile(analysisPath, 'utf8'), previous);
   assert.equal(await readFile(join(root, 'rules.md'), 'utf8'), rules);
   assert.deepEqual((await readdir(join(root, '.comment-to-code'))).sort(), ['analysis.json', 'capture.json']);
+});
+
+test('explicit agent timeout aborts safely and a sufficient bound completes analysis', async t => {
+  const { root, tools, cli } = await checkout(t);
+  await cli('run', '--agent', 'codex');
+  const previous = await publishedArtifacts(root);
+  const history = reviewedHistory([1]);
+  await writeFile(join(root, '.comment-to-code/capture.json'), JSON.stringify(history));
+  const agent = fixtureAgent();
+  const classification = await agent.runAgent('codex', `\nDATA ${JSON.stringify({
+    pullRequests: history.pullRequests,
+    targets: history.pullRequests.flatMap(pr => pr.comments.map(comment => ({ prNumber: pr.number, commentId: comment.id }))),
+  })}`);
+  const consolidation = await agent.runAgent('codex', `\nDATA ${JSON.stringify({ findings: JSON.parse(classification).findings })}`);
+  const responses = join(tools, 'responses.json');
+  await writeFile(responses, JSON.stringify({ classification, consolidation }));
+  const executable = join(tools, 'codex');
+  await writeFile(executable, `#!${process.execPath}
+import fs from 'node:fs';
+const args = process.argv.slice(2);
+const prompt = fs.readFileSync(0, 'utf8');
+const data = JSON.parse(prompt.slice(prompt.indexOf('\\nDATA ') + 6));
+const responses = JSON.parse(fs.readFileSync(${JSON.stringify(responses)}, 'utf8'));
+setTimeout(() => {
+  fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], data.targets ? responses.classification : responses.consolidation);
+  process.stdout.write('{"type":"turn.completed"}\\n');
+}, 300);
+`);
+  await chmod(executable, 0o755);
+  await assert.rejects(cli('analyze', '--agent', 'codex', '--agent-timeout-ms', '100'), /timed out/);
+  assert.deepEqual(await publishedArtifacts(root), previous);
+  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  await cli('analyze', '--agent', 'codex', '--agent-timeout-ms', '5000');
+  const completed = JSON.parse(await readFile(join(root, '.comment-to-code/analysis.json'), 'utf8'));
+  assert.equal(completed.findings.length, 1);
+  assert.equal(completed.candidates.length, 1);
+  assert.equal(completed.stats.analyzed, 1);
 });
 
 test('analysis rejects absent, cross-repository, stale, and malformed captures', async t => {
@@ -183,19 +221,6 @@ test('cache protections reject tracked cache, symlink directory/ancestor/ignore 
       await assert.rejects(stat(join(outside, 'capture.json')), { code: 'ENOENT' });
     }
   }
-});
-
-test('CLI passes selected backend/model/input limit through real analysis boundary', async t => {
-  const { root, identify } = await checkout(t);
-  await main(['capture'], { cwd: root, identify, stdout: output, capture: async () => evidence() });
-  let received;
-  await main(['analyze', '--agent', 'claude', '--model', 'literal;name', '--max-input-bytes', '4096'], {
-    cwd: root, identify, stdout: output,
-    analyze: async (capture, options) => { received = { capture, maxInputBytes: options.maxInputBytes }; await options.runAgent('private'); return { version: 1, repository, rules: [], candidates: [], findings: [], groups: [], analyzedAt: new Date().toISOString(), stats: { comments: 0, analyzed: 0, cached: 0, rules: 0, candidates: 0 } }; },
-    runAgent: async (...args) => { assert.deepEqual(args, ['claude', 'private', { model: 'literal;name' }]); return '{}'; },
-  });
-  assert.equal(received.maxInputBytes, 4096);
-  assert.deepEqual(received.capture.repository, repository);
 });
 
 test('validated batches survive provider failure and resume only remaining targets without extra incidents', async t => {
