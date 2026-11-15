@@ -71,6 +71,18 @@ const capture = { version: 1, repository, capturedAt: fixedAt, pullRequests: [
   })
 ] };
 capture.pullRequests[1].comments.push({ id: 'discussion:3', kind: 'discussion', body: 'Thanks, the new names are much clearer!', url: `${repository.url}/pull/2#issuecomment-3`, author: 'reviewer', createdAt: fixedAt, updatedAt: fixedAt, threadId: 'discussion:3', path: null, line: null, originalCommitId: null, diffHunk: null });
+const simulation = pullRequest(3, {
+  path: 'src/simulator.js', title: 'Keep partial fills partial and clear request faults',
+  body: 'PART scenarios stay partially filled for quantities of at least two. Queued faults belong only to the current placement, including rejection.',
+  before: 'export async function simulate(request, sim) { sim.queueFault(request.fault); return sim.place({ filled: 50 }); }\n',
+  after: 'export async function simulate(request, sim) { sim.queueFault(request.fault); try { return await sim.place({ filled: Math.min(50, Math.floor(request.quantity / 2)) }); } finally { sim.clearFaults(); } }\n',
+  comment: 'A fixed first fill of 50 fully fills or overfills small PART orders. Scale the scripted fill to the requested quantity so it remains partial.',
+});
+simulation.comments.push({
+  ...simulation.comments[0], id: 'inline:8', threadId: 'inline:8', url: `${simulation.url}#discussion_r8`,
+  body: 'A rejected placement leaves its queued fault behind for the next unrelated order. Clear the request fault queue on every exit, including rejection.',
+});
+capture.pullRequests.push(simulation);
 
 const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-smoke-'));
 try {
@@ -80,7 +92,7 @@ try {
     if (values.trace) console.error(JSON.stringify({ syntheticFixtureResponse: response }));
     return response;
   } });
-  assert.equal(analysis.findings.length, 7, 'every review comment must be classified');
+  assert.equal(analysis.findings.length, 9, 'every review comment must be classified');
   assert.equal(analysis.rules.length, 2, 'only optional-collection and index-access mechanisms recur');
   const membership = groups => groups.map(group => group.incidents.flatMap(incident => incident.commentIds).sort()).sort((a, b) => a[0].localeCompare(b[0]));
   const promoted = analysis.groups.filter(group => analysis.rules.some(rule => rule.id === group.id));
@@ -90,8 +102,8 @@ try {
     const group = promoted.find(group => group.id === rule.id);
     assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), rule.commentIds.map(id => [id]), 'each recurring defect must remain its own incident');
   }
-  assert.equal(analysis.candidates.length, 2, 'unrelated database singletons must remain candidates');
-  assert.deepEqual(membership(analysis.candidates), [['inline:6'], ['inline:7']], 'foreign-key retention and lifecycle migration must remain separate from each other and the index rule');
+  assert.equal(analysis.candidates.length, 4, 'unrelated database and same-file simulator defects must remain candidates');
+  assert.deepEqual(membership(analysis.candidates), [['inline:3'], ['inline:6'], ['inline:7'], ['inline:8']], 'retention, lifecycle, partial-fill quantity and fault cleanup are four distinct singleton mechanisms');
   for (const candidate of analysis.candidates) assert.equal(candidate.incidents.length, 1, 'a singleton must not acquire recurrence by association');
   assert.notEqual(analysis.findings.find(finding => finding.commentId === 'discussion:3').status, 'confirmed', 'praise cannot support a defect rule');
   await publishRules(cwd, analysis);

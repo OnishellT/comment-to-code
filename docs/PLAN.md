@@ -160,3 +160,7 @@ ADR 0003 governs this correction. A complete real analysis structurally passed b
 ## Issue19 — explicit bounded analysis deadlines
 
 The real complete-history causal replay timed out after five minutes. Add `--agent-timeout-ms N` to analysis commands, forwarding to the existing adapter deadline with unchanged default, isolation, byte limits and v6 finding hashes. Validate positive integer Node timer bounds before execution. Verify through the actual CLI and a timed fixture subprocess: short deadline aborts without replacing prior artifacts/checkpointing incomplete work; sufficient deadline completes classification/consolidation. Document units and scope. Install the candidate and repeat the unchanged full-history replay with an explicit fifteen-minute bound before approving PR17.
+
+## Issue16 follow-through — respect observed resolutions
+
+The complete raw146-group audit finds systematic mismatches beyond a duplicate placeholder. Ground each mechanism/intervention in every constituent's observed resolution, preserve accepted alternative remedies, split incident-specific/opposite safeguards and reconcile genuinely synonymous cores. Add one same-PR/file simulator counterexample to the existing native smoke: independent partial-fill scaling and fault cleanup stay singleton candidates. Run focused checks and parse the extended smoke; native nine-comment and complete-history verification must wait for the explicitly observed provider reset. Keep strict rejection, all evidence and v6 findings; no unchanged native retry or hand-repaired documents.

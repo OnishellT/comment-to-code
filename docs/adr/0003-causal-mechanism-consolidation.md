@@ -22,3 +22,9 @@ Extend the real-agent smoke with recurring index-access defects and unrelated si
 ## Full-history runtime budget (issue19)
 
 The installed complete-history reconsolidation exceeded the existing 300000ms agent deadline. Expose the existing adapter deadline as `--agent-timeout-ms` on `analyze`/`run`, rather than reduce evidence or force topic-level grouping for speed. Keep the five-minute default; explicit values must be positive integer milliseconds within Node's supported timer range (1..2147483647). Process-group termination, isolation and byte limits remain unchanged. A timed subprocess fixture verifies failure preserves previous artifacts and a sufficient bound completes analysis; complete-history semantic acceptance remains separate.
+
+## Resolution-grounded revision
+
+The longer-bound real response still failed exact coverage (one duplicated ID in a provisional placeholder group). Independent inspection of all146 proposed groups and609 constituent causal/resolution fields also found systematic topic buckets, not merely that drafting artifact: unrelated simulator fixes, testing-quality objectives, incompatible scheduling/revocation remedies and opposite logging failures.
+
+Require every grouped incident's observed resolution to support the same preventive invariant; honor accepted alternative fixes rather than impose the original suggestion. Use generic counterexamples for unrelated simulation safeguards, missing versus excessive work, and test-description versus oracle changes. Finalize the exact partition without provisional groups. Extend the existing native smoke with two unrelated mechanisms in one simulator PR/file: quantity-relative partial fills and fault-queue cleanup. They must remain separate singleton candidates. No extra model stage, validator relaxation, response salvage, cache epoch or target rule count. Native verification is blocked by an observed provider usage limit and must not be claimed until run.
