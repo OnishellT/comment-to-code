@@ -76,7 +76,7 @@ async function prepareCache(cwd) {
   if (!content.split(/\r?\n/).includes('/.comment-to-code/')) {
     await atomicWrite(ignore, `${content}${content && !content.endsWith('\n') ? '\n' : ''}\n# Local private PR evidence (comment-to-code)\n/.comment-to-code/\n`, { mode: 0o644 });
   }
-  await protectIgnoredPaths(cwd, ['.comment-to-code/', '.comment-to-code/capture.json', '.comment-to-code/analysis.json']);
+  await protectIgnoredPaths(cwd, ['.comment-to-code/', '.comment-to-code/capture.json', '.comment-to-code/analysis.json', '.comment-to-code/consolidation.json']);
   await mkdir(cache, { recursive: true, mode: 0o700 });
   await safePath(cache, { directory: true, absent: false });
   await chmod(cache, 0o700);
@@ -174,10 +174,21 @@ export async function main(argv = process.argv.slice(2), { cwd = process.cwd(), 
   }
   const previous = await readJSON(join(cache, 'analysis.json'), { optional: true }) ?? null;
   if (previous && (previous.version !== 1 || !sameRepository(previous.repository, project.repository))) throw new Error('Previous analysis is outdated or belongs to another repository; remove its cache before retrying');
+  const consolidationPath = join(cache, 'consolidation.json');
+  const consolidation = await readJSON(consolidationPath, { optional: true });
+  if (consolidation === null) throw new Error('Malformed consolidation checkpoint: expected an object');
   const { loadFinding, saveFindings, reportReuse } = findingCheckpoints(root, cache, stdout);
   const analysis = await analyze(evidence, {
-    runAgent: prompt => { reportReuse(); return runAgent(options.agent, prompt, { model: options.model, timeoutMs: options.agentTimeoutMs }); },
+    runAgent: (prompt, { outputSchema } = {}) => { reportReuse(); return runAgent(options.agent, prompt, { model: options.model, timeoutMs: options.agentTimeoutMs, outputSchema }); },
     previous, loadFinding, saveFindings,
+    loadConsolidation: async () => consolidation === undefined ? null : consolidation,
+    saveConsolidation: async state => {
+      await safePath(consolidationPath);
+      await protectTrackedCache(root);
+      await protectIgnoredPaths(root, ['.comment-to-code/', '.comment-to-code/consolidation.json']);
+      await atomicWrite(consolidationPath, `${JSON.stringify(state, null, 2)}\n`);
+      stdout.write(`Checkpointed consolidation for ${state.processed.length} finding(s).\n`);
+    },
     ...(options.maxInputBytes === undefined ? {} : { maxInputBytes: options.maxInputBytes }),
   });
   reportReuse();

@@ -36,7 +36,7 @@ function reviewedHistory(counts = [17, 1]) {
     ...evidence(),
     pullRequests: counts.map((count, index) => {
       const number = index + 1;
-      const sha = String(number).repeat(40);
+      const sha = number.toString(16).padStart(40, '0');
       const patch = '@@ -1 +1 @@\n-return input.value;\n+return input?.value;';
       return {
         number, title: 'Handle absent input', body: '', url: `${repository.url}/pull/${number}`,
@@ -78,9 +78,10 @@ function fixtureAgent({ beforeBatch, consolidate } = {}) {
       }
       consolidations.push(data);
       return JSON.stringify(consolidate ? await consolidate(data) : { groups: [{
-        rootCause: 'Dereferencing optional input without an absence guard',
-        prevention: 'Guard optional inputs before dereferencing them.',
-        incidents: data.findings.map(finding => ({ commentIds: [finding.commentId], explanation: 'An observed absent-input defect.' })),
+        existingGroupIndex: data.catalog.length ? 0 : null,
+        rootCause: data.catalog.length ? null : 'Dereferencing optional input without an absence guard',
+        prevention: data.catalog.length ? null : 'Guard optional inputs before dereferencing them.',
+        incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'Optional chaining guards absence for this observed absent-input defect.' })),
       }] });
     },
   };
@@ -154,7 +155,7 @@ test('explicit agent timeout aborts safely and a sufficient bound completes anal
     pullRequests: history.pullRequests,
     targets: history.pullRequests.flatMap(pr => pr.comments.map(comment => ({ prNumber: pr.number, commentId: comment.id }))),
   })}`);
-  const consolidation = await agent.runAgent('codex', `\nDATA ${JSON.stringify({ findings: JSON.parse(classification).findings })}`);
+  const consolidation = await agent.runAgent('codex', `\nDATA ${JSON.stringify({ findings: JSON.parse(classification).findings, catalog: [] })}`);
   const responses = join(tools, 'responses.json');
   await writeFile(responses, JSON.stringify({ classification, consolidation }));
   const executable = join(tools, 'codex');
@@ -255,8 +256,7 @@ test('validated batches survive provider failure and resume only remaining targe
   assert.deepEqual(resumed.batches.flat().map(target => target.commentId).sort(), input.pullRequests.flatMap(pr => pr.comments.map(comment => comment.id)).filter(id => !cachedIds.has(id)).sort());
   assert.deepEqual(analysis.stats, { comments: 18, analyzed: 2, cached: 16, rules: 1, candidates: 0 });
   assert.equal(new Set(analysis.findings.map(finding => finding.commentId)).size, 18);
-  assert.equal(resumed.consolidations.length, 1);
-  assert.equal(resumed.consolidations[0].findings.length, 18);
+  assert.deepEqual(resumed.consolidations.map(data => data.findings.length), [16, 2]);
   assert.equal(analysis.groups[0].incidents.length, 2);
   assert.equal(analysis.rules[0].incidentCount, 2);
   assert.equal((await checkpointEntries(root)).length, 18);
@@ -397,4 +397,131 @@ test('an invalid last finding rejects the entire batch before creating checkpoin
   assert.equal(agent.consolidations.length, 0);
   await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
   assert.deepEqual(await publishedArtifacts(root), previous);
+});
+
+test('bounded consolidation failure preserves the validated prefix and old documents, then resumes only remaining findings', async t => {
+  const { root, identify } = await checkout(t);
+  let progress = '';
+  const options = { cwd: root, identify, stdout: { write(text) { progress += text; } } };
+  await writeFile(join(root, 'AGENTS.md'), 'Human instructions remain.\n');
+  await main(['run', '--agent', 'claude'], { ...options, capture: async () => evidence() });
+  const old = await publishedArtifacts(root);
+  await main(['capture'], { ...options, capture: async () => reviewedHistory() });
+  const interrupted = fixtureAgent();
+  await assert.rejects(main(['analyze', '--agent', 'claude'], {
+    ...options,
+    runAgent: async (...args) => {
+      const response = await interrupted.runAgent(...args);
+      if (interrupted.consolidations.length === 2) throw new Error('provider unavailable');
+      return response;
+    },
+  }), /provider unavailable/);
+  assert.deepEqual(interrupted.consolidations.map(data => data.findings.length), [16, 2]);
+  assert.deepEqual(await publishedArtifacts(root), old);
+  const statePath = join(root, '.comment-to-code/consolidation.json');
+  const prefixBytes = await readFile(statePath, 'utf8');
+  const prefix = JSON.parse(prefixBytes);
+  assert.equal(prefix.processed.length, 16);
+  assert.equal(prefix.groups[0].incidents.length, 1);
+  assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+  assert.equal((await checkpointEntries(root)).length, 18);
+  assert.match(progress, /Checkpointed consolidation for 16 finding\(s\)/);
+  assert.doesNotMatch(progress, /PRIVATE REVIEW|return input|github\.com/);
+
+  const invalid = fixtureAgent();
+  await assert.rejects(main(['analyze', '--agent', 'claude'], {
+    ...options,
+    runAgent: async (...args) => {
+      const response = JSON.parse(await invalid.runAgent(...args));
+      response.groups[0].incidents.at(-1).commentIds = ['unknown'];
+      return JSON.stringify(response);
+    },
+  }), /unknown or duplicate/);
+  assert.equal(invalid.batches.length, 0);
+  assert.equal(invalid.consolidations.length, 1);
+  assert.equal(await readFile(statePath, 'utf8'), prefixBytes);
+  assert.deepEqual(await publishedArtifacts(root), old);
+
+  const resume = fixtureAgent();
+  const analysis = await main(['analyze', '--agent', 'claude'], { ...options, runAgent: resume.runAgent });
+  assert.equal(resume.batches.length, 0);
+  assert.equal(resume.consolidations.length, 1);
+  assert.equal(resume.consolidations[0].findings.length, 2);
+  assert.deepEqual(resume.consolidations[0].catalog[0].incidents[0].commentIds, prefix.groups[0].incidents[0].commentIds);
+  assert.equal(analysis.rules[0].incidentCount, 2);
+  assert.equal(analysis.rules[0].commentIds.length, 18);
+  assert.equal(JSON.parse(await readFile(statePath, 'utf8')).processed.length, 18);
+  const documents = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(root, file), 'utf8')));
+  const completeState = await readFile(statePath, 'utf8');
+  const cached = await main(['analyze', '--agent', 'claude'], {
+    ...options, runAgent: async () => { throw new Error('complete checkpoint must not call provider'); },
+  });
+  assert.equal(cached.stats.cached, 18);
+  assert.deepEqual(await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(root, file), 'utf8'))), documents);
+  assert.equal(await readFile(statePath, 'utf8'), completeState);
+  assert.match(documents[1], /^Human instructions remain\.\n/);
+});
+
+test('consolidation checkpoint loads reject malformed, cross-repository, tracked and unsafe private paths', async t => {
+  for (const scenario of ['json', 'null', 'shape', 'cross-repository', 'coverage', 'tracked', 'symlink', 'nonregular', 'unignored']) await t.test(scenario, async t => {
+    const { root, identify } = await checkout(t);
+    const options = { cwd: root, identify, stdout: output };
+    await main(['run', '--agent', 'omp'], { ...options, capture: async () => reviewedHistory([1, 1]), runAgent: fixtureAgent().runAgent });
+    const old = await publishedArtifacts(root);
+    const path = join(root, '.comment-to-code/consolidation.json');
+    const bytes = await readFile(path, 'utf8');
+    const state = JSON.parse(bytes);
+    if (scenario === 'json') await writeFile(path, '{');
+    else if (scenario === 'null') await writeFile(path, 'null');
+    else if (scenario === 'shape') await writeFile(path, '{}');
+    else if (scenario === 'cross-repository') await writeFile(path, JSON.stringify({ ...state, repository: { ...state.repository, owner: 'other' } }));
+    else if (scenario === 'coverage') await writeFile(path, JSON.stringify({ ...state, processed: [] }));
+    else if (scenario === 'tracked') await exec('git', ['add', '-f', path], { cwd: root });
+    else if (scenario === 'nonregular') { await rm(path); await mkdir(path); }
+    else if (scenario === 'unignored') await writeFile(join(root, '.gitignore'), '/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/*\n!/.comment-to-code/consolidation.json\n');
+    else {
+      const outside = await mkdtemp(join(tmpdir(), 'ctc-consolidation-outside-'));
+      t.after(() => rm(outside, { recursive: true, force: true }));
+      const target = join(outside, 'private.json');
+      await writeFile(target, bytes);
+      await rm(path);
+      await symlink(target, path);
+    }
+    let calls = 0;
+    await assert.rejects(main(['analyze', '--agent', 'omp'], {
+      ...options, runAgent: async () => { calls++; throw new Error('must not call provider'); },
+    }), /Malformed|Invalid analysis|another repository|tracked|symlink|regular file|ignore/i);
+    assert.equal(calls, 0);
+    assert.deepEqual(await publishedArtifacts(root), old);
+  });
+});
+
+test('consolidation writes recheck ignored directory, tracked cache and symlink after model execution', async t => {
+  for (const scenario of ['unignored', 'temporary-unignored', 'tracked', 'symlink']) await t.test(scenario, async t => {
+    const { root, identify } = await checkout(t);
+    const options = { cwd: root, identify, stdout: output };
+    await main(['run', '--agent', 'omp'], { ...options, capture: async () => evidence() });
+    const old = await publishedArtifacts(root);
+    await main(['capture'], { ...options, capture: async () => reviewedHistory([1, 1]) });
+    const agent = fixtureAgent();
+    await assert.rejects(main(['analyze', '--agent', 'omp'], {
+      ...options,
+      runAgent: async (...args) => {
+        const response = await agent.runAgent(...args);
+        if (agent.consolidations.length) {
+          const path = join(root, '.comment-to-code/consolidation.json');
+          if (scenario === 'tracked') {
+            await writeFile(path, '{}');
+            await exec('git', ['add', '-f', path], { cwd: root });
+          } else if (scenario === 'symlink') await symlink(join(root, 'AGENTS.md'), path);
+          else await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n/.comment-to-code/findings/\n${scenario === 'temporary-unignored' ? '/.comment-to-code/consolidation.json\n' : ''}`);
+        }
+        return response;
+      },
+    }), /ignore|tracked|symlink/i);
+    assert.equal(agent.consolidations.length, 1);
+    assert.equal((await checkpointEntries(root)).length, 2);
+    assert.deepEqual(await publishedArtifacts(root), old);
+    if (scenario.includes('unignored')) await assert.rejects(stat(join(root, '.comment-to-code/consolidation.json')), { code: 'ENOENT' });
+  });
 });

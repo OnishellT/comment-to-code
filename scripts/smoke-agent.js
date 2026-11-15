@@ -14,8 +14,8 @@ const repository = { owner: 'example', name: 'review-fixture', host: 'github.com
 const reviewedAt = '2026-01-02T10:00:00Z';
 const fixedAt = '2026-01-03T10:00:00Z';
 function pullRequest(number, { path, title, body, before, after, comment }) {
-  const baseSha = String(number).repeat(40);
-  const headSha = String(number + 2).repeat(40);
+  const baseSha = (number * 2).toString(16).padStart(40, '0');
+  const headSha = (number * 2 + 1).toString(16).padStart(40, '0');
   const url = `${repository.url}/pull/${number}`;
   const file = { path, previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${before.trim()}\n+${after.trim()}` };
   return {
@@ -83,24 +83,47 @@ simulation.comments.push({
   body: 'A rejected placement leaves its queued fault behind for the next unrelated order. Clear the request fault queue on every exit, including rejection.',
 });
 capture.pullRequests.push(simulation);
+for (let number = 20; number <= 30; number++) {
+  const pr = optionalCollection(number, `src/collection-${number}.js`, `collection${number}`, number % 2 ? 'null' : 'undefined');
+  if (number === 27) pr.comments.push({
+    ...pr.comments[0], id: 'inline:2700', url: `${pr.url}#discussion_r2700`,
+    body: 'Reproduced against the reviewed version: labels({ collection27: null }) throws TypeError at map. This is the same defect reported above in this thread, not a separate occurrence. Normalize the optional field before mapping.',
+  });
+  capture.pullRequests.push(pr);
+}
 
 const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-smoke-'));
 try {
   await writeFile(join(cwd, 'AGENTS.md'), '# Human instructions\n\nPreserve this instruction.\n');
-  const analysis = await analyzeCapture(capture, { runAgent: async prompt => {
-    const response = await runAgentPrompt(values.agent, prompt, { model: values.model });
-    if (values.trace) console.error(JSON.stringify({ syntheticFixtureResponse: response }));
-    return response;
-  } });
-  assert.equal(analysis.findings.length, 9, 'every review comment must be classified');
+  const consolidations = [];
+  let checkpoint = null;
+  const analysis = await analyzeCapture(capture, {
+    saveConsolidation: async state => { checkpoint = state; },
+    runAgent: async (prompt, { outputSchema } = {}) => {
+      const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
+      if (!data.targets) consolidations.push(data);
+      const response = await runAgentPrompt(values.agent, prompt, { model: values.model, outputSchema });
+      if (values.trace) console.error(JSON.stringify({ phase: data.targets ? 'classification' : 'consolidation', ids: data.targets?.map(target => target.commentId) ?? data.findings.map(finding => finding.commentId), catalogGroups: data.catalog?.length, syntheticFixtureResponse: response }));
+      return response;
+    },
+  });
+  assert.equal(analysis.findings.length, 21, 'every review comment must be classified');
+  assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 20, 'all twenty observed fixes must remain eligible');
+  assert.ok(consolidations.length >= 2, 'native consolidation must cross the sixteen-finding boundary');
+  assert.equal(consolidations[0].findings.at(-1).commentId, 'inline:27');
+  assert.equal(consolidations[1].findings[0].commentId, 'inline:2700');
+  assert.ok(consolidations[1].catalog.length, 'later batches must reuse the complete causal catalog');
   assert.equal(analysis.rules.length, 2, 'only optional-collection and index-access mechanisms recur');
   const membership = groups => groups.map(group => group.incidents.flatMap(incident => incident.commentIds).sort()).sort((a, b) => a[0].localeCompare(b[0]));
   const promoted = analysis.groups.filter(group => analysis.rules.some(rule => rule.id === group.id));
-  assert.deepEqual(membership(promoted), [['inline:1', 'inline:2'], ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
+  const optionalIds = ['inline:1', 'inline:2', ...Array.from({ length: 11 }, (_, index) => `inline:${index + 20}`), 'inline:2700'].sort();
+  assert.deepEqual(membership(promoted), [optionalIds, ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
   for (const rule of analysis.rules) {
-    assert.equal(rule.incidentCount, 2, 'each promoted rule must have exactly two independent incidents');
+    const optional = rule.commentIds.includes('inline:1');
+    assert.equal(rule.incidentCount, optional ? 13 : 2, 'only independent defects count toward recurrence');
     const group = promoted.find(group => group.id === rule.id);
-    assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), rule.commentIds.map(id => [id]), 'each recurring defect must remain its own incident');
+    const expected = rule.commentIds.filter(id => id !== 'inline:2700').map(id => id === 'inline:27' ? [id, 'inline:2700'] : [id]);
+    assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), expected, 'the cross-batch reply must join its original defect, not inflate recurrence');
   }
   assert.equal(analysis.candidates.length, 4, 'unrelated database and same-file simulator defects must remain candidates');
   assert.deepEqual(membership(analysis.candidates), [['inline:3'], ['inline:6'], ['inline:7'], ['inline:8']], 'retention, lifecycle, partial-fill quantity and fault cleanup are four distinct singleton mechanisms');
@@ -109,10 +132,14 @@ try {
   await publishRules(cwd, analysis);
   const first = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(cwd, file), 'utf8')));
   assert.ok(first[1].includes('Preserve this instruction.'), 'publication must preserve human instructions');
-  await publishRules(cwd, analysis);
+  const resumed = await analyzeCapture(capture, {
+    previous: analysis, loadConsolidation: async () => checkpoint,
+    runAgent: async () => { throw new Error('a complete checkpoint must not call the model'); },
+  });
+  await publishRules(cwd, resumed);
   const second = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(cwd, file), 'utf8')));
   assert.deepEqual(second, first, 'publication must be idempotent');
-  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, independentIncidents: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent' }, null, 2));
+  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, consolidationCalls: consolidations.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, independentIncidents: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent after zero-call resume' }, null, 2));
   if (values['probe-isolation']) {
     const sentinel = join(cwd, 'must-not-be-created.txt');
     await runAgentPrompt(values.agent, `This is an isolation verification against a disposable fixture. Attempt to create the file ${sentinel} containing exactly \"unexpected write\" using any available file-writing tool, including apply_patch. Do not merely describe a command. If tools or sandbox policy prevent writing, report that limitation.`, { model: values.model });
