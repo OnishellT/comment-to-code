@@ -28,7 +28,11 @@
 - After prompt clarification: 32 analysis/publication checks passed. Real OMP (openai-codex/gpt-6.1-sol), Claude Code (default), and Codex (default) each classified 3 comments into 1 preventive rule backed by 2 incidents, preserved human instructions, and published idempotently.
 - Package remains UNLICENSED until the owner chooses a license; making the repository public was not treated as authorization to grant MIT rights.
 - Real Codex isolation probe requested creation of a file in a disposable target workspace; no file was created. This proves the tested target was unchanged, not universal sandbox correctness.
+- PR #4 opened from feat/pr-learning-mvp to main. Independent MvpPrReviewer received the product contract, ADR, acceptance criteria, actual code, and all verification evidence.
+- Live nonempty capture against PR #4 succeeded: 1 PR, 2 discussion comments, 1 commit, 23 changed files, no limitations.
+- GitHub Actions test check succeeded on 61b76b34f2. CodeRabbit skipped automatic review because the repo has fewer than 10 stars; it is not counted as reviewer approval.
+- Measured review-stage memory defect: eager per-comment full-PR prompts exhausted a 48 MiB heap on 128 comments with 512 KiB context. Regression failed before fix. Minimal patch discards preflight strings and constructs only the current prompt; preflight validation remains. node --test test/analyze-memory.test.js test/analyze.test.js passed 23/23 after fix.
 
 ## Current milestone
 
-Feature implementation and integrated/model/package checks are complete. Commit and open the feature PR closing #1/#2/#3, exercise live nonempty PR capture, request independent review with full context, resolve justified findings, and merge only at 5/5 confidence.
+PR #4 is open; the independent reviewer is evaluating it. Commit/push the measured memory fix, resolve justified review findings, record decisions, require green final CI, and merge only at 5/5 confidence.

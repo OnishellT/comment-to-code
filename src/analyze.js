@@ -284,10 +284,10 @@ export async function analyzeCapture(capture, { runAgent, previous = null, maxIn
   }
   const pending = entries.filter(entry => old.get(entry.comment.id)?.inputHash !== entry.inputHash);
   if (entries.length && typeof runAgent !== 'function') throw new Error('runAgent is required to interpret and consolidate comments');
-  for (const entry of pending) entry.prompt = bounded(findingPrompt(entry.pr, entry.comment, capture.repository), maxInputBytes);
+  for (const entry of pending) bounded(findingPrompt(entry.pr, entry.comment, capture.repository), maxInputBytes);
   const findings = [];
   let cached = 0;
-  for (const { pr, comment, inputHash, prompt } of entries) {
+  for (const { pr, comment, inputHash } of entries) {
     const prior = old.get(comment.id);
     if (prior?.inputHash === inputHash) {
       validateFinding(prior, pr, comment, inputHash);
@@ -295,7 +295,7 @@ export async function analyzeCapture(capture, { runAgent, previous = null, maxIn
       cached++;
       continue;
     }
-    const result = parseResponse(await runAgent(prompt));
+    const result = parseResponse(await runAgent(findingPrompt(pr, comment, capture.repository)));
     keys(result, ['category', 'rootCause', 'prevention', 'resolution', 'evidence', 'confidence', 'status', 'outcome', 'codeEvidence'], 'classification');
     if (!['verified-fix', 'rejected', 'uncertain', 'not-applicable'].includes(result.outcome) || !Array.isArray(result.codeEvidence)) fail('invalid outcome or codeEvidence');
     if (result.outcome === 'uncertain' && result.status !== 'unresolved') fail('uncertain finding must remain unresolved');
