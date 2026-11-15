@@ -1,0 +1,11 @@
+{
+  "name": "comment-to-code",
+  "version": "0.1.0",
+  "description": "Learn evidence-backed prevention rules from GitHub pull request history",
+  "type": "module",
+  "bin": { "comment-to-code": "bin/comment-to-code.js" },
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test", "smoke:agent": "node scripts/smoke-agent.js" },
+  "files": ["bin/", "src/", "README.md", "install.sh"],
+  "license": "UNLICENSED"
+}

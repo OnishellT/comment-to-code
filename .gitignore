@@ -1,0 +1,4 @@
+# Local PR evidence and analysis may contain private project data.
+.comment-to-code/
+node_modules/
+*.tgz
