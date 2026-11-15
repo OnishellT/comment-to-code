@@ -37,7 +37,7 @@ async function analysis(count = 2) {
       resolution: 'Added an explicit guard.', evidence: ['b'.repeat(40), data.pullRequests[0].comments.find(comment => comment.id === target.commentId).url],
       confidence: 'high', status: 'confirmed', outcome: 'verified-fix', codeEvidence: [{ ref: 'b'.repeat(40), path: 'input.js', quote: '+if (value) read(value);' }],
     })) });
-    return JSON.stringify({ groups: [{ rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ commentIds: [finding.commentId], explanation: 'A distinct defect.' })) }] });
+    return JSON.stringify({ groups: [{ existingGroupIndex: null, rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'An explicit absence guard fixes this distinct defect.' })) }] });
   } });
 }
 
