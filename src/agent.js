@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { copyFile, lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AGENTS } from './install.js';
@@ -66,12 +66,17 @@ function cleanEnvironment(home) {
   return env;
 }
 
-export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 } = {}) {
+export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000, outputSchema } = {}) {
   if (!AGENTS.includes(agent)) throw new Error('Agent must be omp, claude, or codex');
   if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Agent prompt must be nonempty text');
   if (Buffer.byteLength(prompt) > 16 * 1024 * 1024) throw new Error('Agent prompt exceeds 16 MiB');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error('timeoutMs must be a positive integer');
   if (model !== undefined && (typeof model !== 'string' || !model.trim() || model.startsWith('-'))) throw new Error('Model must be a nonempty model name, not an option');
+  let schema;
+  if (outputSchema !== undefined) {
+    if (outputSchema === null || typeof outputSchema !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(outputSchema))) throw new Error('outputSchema must be a plain JSON object');
+    try { schema = JSON.stringify(outputSchema); } catch { throw new Error('outputSchema must be a serializable JSON object'); }
+  }
   const temporary = await mkdtemp(join(tmpdir(), 'comment-to-code-agent-'));
   const startedAt = Date.now();
   try {
@@ -92,12 +97,14 @@ export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 
       const credentials = await execute('omp', ['auth', 'export'], '', { ...options(), env: { ...process.env }, privateOutput: true });
       await execute('omp', ['auth', 'import', '-'], credentials, { ...options(), privateOutput: true });
       args = ['--print', '--mode', 'text', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-context-files', '--no-lsp', '--no-pty', '--no-title', '--offline'];
+      // OMP has no native schema option; consumers must still validate its text response.
     } else if (agent === 'claude') {
       const config = join(home, '.claude');
       await mkdir(config);
       await copyCredential(join(process.env.CLAUDE_CONFIG_DIR || homedir(), process.env.CLAUDE_CONFIG_DIR ? '.credentials.json' : '.claude/.credentials.json'), join(config, '.credentials.json'));
       env.CLAUDE_CONFIG_DIR = config;
       args = ['--print', '--output-format', 'json', '--input-format', 'text', '--safe-mode', '--restricted', '--tools', '', '--disable-slash-commands', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '', '--no-session-persistence', '--no-chrome'];
+      if (schema !== undefined) args.push('--json-schema', schema);
     } else {
       const config = join(home, '.codex');
       await mkdir(config);
@@ -105,6 +112,11 @@ export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 
       env.CODEX_HOME = config;
       outputFile = join(temporary, 'last-message.txt');
       args = ['--no-daemon', '--ask-for-approval', 'never', 'exec', '--json', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outputFile];
+      if (schema !== undefined) {
+        const schemaFile = join(temporary, 'schema.json');
+        await writeFile(schemaFile, schema, { mode: 0o600, flag: 'wx' });
+        args.push('--output-schema', schemaFile);
+      }
       const disabled = ['shell_tool', 'unified_exec', 'code_mode', 'code_mode_host', 'code_mode_only', 'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2', 'browser_use', 'computer_use', 'image_generation', 'view_image', 'memories', 'skill_search', 'skill_mcp_dependency_install', 'tool_suggest', 'sleep_tool'];
       for (const feature of disabled) args.push('--disable', feature);
       args.push('--enable', 'skip_host_skill_discovery');
@@ -116,8 +128,13 @@ export async function runAgentPrompt(agent, prompt, { model, timeoutMs = 300000 
     if (agent === 'claude') {
       let envelope;
       try { envelope = JSON.parse(result); } catch { throw new Error('Claude returned an invalid JSON result envelope'); }
-      if (envelope.type !== 'result' || envelope.is_error || typeof envelope.result !== 'string') throw new Error('Claude did not return a successful text result');
-      result = envelope.result;
+      if (schema !== undefined) {
+        if (envelope?.type !== 'result' || envelope.subtype !== 'success' || envelope.is_error !== false || !envelope.structured_output || typeof envelope.structured_output !== 'object' || Array.isArray(envelope.structured_output)) throw new Error('Claude did not return a successful structured object result');
+        result = JSON.stringify(envelope.structured_output);
+      } else {
+        if (envelope.type !== 'result' || envelope.is_error || typeof envelope.result !== 'string') throw new Error('Claude did not return a successful text result');
+        result = envelope.result;
+      }
     } else if (agent === 'codex') {
       const stat = await lstat(outputFile);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > OUTPUT_LIMIT) throw new Error('Codex final output is unsafe or exceeds the output limit');

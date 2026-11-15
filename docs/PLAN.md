@@ -146,3 +146,27 @@ Native Codex human output echoes the complete prompt to stderr, crossing the exi
 - Add a behavioral regression for a full input larger than the stderr bound and exact final-response extraction, plus independent oversized-stderr rejection. Observe the large-input regression fail before changing the adapter.
 - No truncation, diagnostic discarding, raised limits, fallback, new configuration, or cache-epoch change. This changes transport formatting, not the classifier/evidence contract.
 - Run focused adapter checks, install a separate artifact and resume the unchanged complete captures. Passing the subprocess boundary is not complete-history success. Require independent review and green CI before merge.
+
+## Issue #16: Causal mechanisms instead of topic buckets
+
+ADR 0003 governs this correction. A complete real analysis structurally passed but mixed unrelated identifier, dependency and type-safety mechanisms, and combined index, foreign-key and migration defects. A concrete causal-separation assertion is red; preserve the unendorsed output.
+
+1. Strengthen only consolidatePrompt: one failure mechanism and a preventive intervention shared by every grouped incident. Partitioning all findings must allow singleton candidates. Prefer causal correctness over a low rule count; merge synonyms, not topic-wide checklists.
+2. Extend scripts/smoke-agent.js, reusing its capture/publication helpers: retain optional-collection recurrence and praise, add two independent index-access defects plus unrelated singleton foreign-key and lifecycle-migration defects. Assert membership, exact independent counts and candidacy without pinning wording.
+3. Keep classification, schemas, evidence validation, v6 finding hashes, thread/incident protections, thresholds and publication unchanged. No heuristic semantic gate, second judge pipeline, post-hoc rule editing, dependency or provider retry.
+4. Delegate analyzer/smoke implementation in this main-based worktree; parent owns ADR/plan/progress, integration, installed complete-capture replay and final judgment. Independent read-only review examines the preserved bad consolidation while implementation proceeds.
+5. Run focused checks and one real native smoke after implementation. Install separately and re-consolidate the complete unchanged capture with every finding reused. Judge resulting rules, then request contextual PR review and green CI before scoped merge. The nine-file customer task remains open until all three histories complete and resulting documents are shown honestly.
+
+## Issue19 — explicit bounded analysis deadlines
+
+The real complete-history causal replay timed out after five minutes. Add `--agent-timeout-ms N` to analysis commands, forwarding to the existing adapter deadline with unchanged default, isolation, byte limits and v6 finding hashes. Validate positive integer Node timer bounds before execution. Verify through the actual CLI and a timed fixture subprocess: short deadline aborts without replacing prior artifacts/checkpointing incomplete work; sufficient deadline completes classification/consolidation. Document units and scope. Install the candidate and repeat the unchanged full-history replay with an explicit fifteen-minute bound before approving PR17.
+
+## Issue16 follow-through — respect observed resolutions
+
+The complete raw146-group audit finds systematic mismatches beyond a duplicate placeholder. Ground each mechanism/intervention in every constituent's observed resolution, preserve accepted alternative remedies, split incident-specific/opposite safeguards and reconcile genuinely synonymous cores. Add one same-PR/file simulator counterexample to the existing native smoke: independent partial-fill scaling and fault cleanup stay singleton candidates. Run focused checks and parse the extended smoke; native nine-comment and complete-history verification must wait for the explicitly observed provider reset. Keep strict rejection, all evidence and v6 findings; no unchanged native retry or hand-repaired documents.
+
+## Issue21 — bounded, resumable causal consolidation
+
+The post-reset native nine-comment scenario passed, but the complete609-finding call emitted partial JSON and an interactive question rather than a finished partition. The native envelope reports ordinary completion, not truncation. Replaying that captured result through the real analyzer deterministically reproduces rejection; strict parsing is correct.
+
+Replace one-shot global output with sequential batches of at most16eligible findings against a complete causal catalog. Snapshot-index assignments preserve existing preventive invariants, join same defects and append independent incidents. Validate an entire batch before applying/checkpointing; canonical thread collapse and final complete coverage remain mandatory. Keep v6 findings, use a separate consolidation policy/input fingerprint and CLI-owned private atomic state, resume only validated prefixes, and never publish partial work. ADR0005 records the design and acceptance checks. Implementation is delegated in a new main-based worktree carrying PR17's owned dependency; no merge or full-history semantic endorsement yet.

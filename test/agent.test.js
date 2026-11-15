@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runAgentPrompt } from '../src/agent.js';
 
+const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
+const privateSchema = { type: 'object', properties: { private: { type: 'string' } }, required: ['private'], additionalProperties: false };
+
 async function fixture(t, body) {
   const dir = await mkdtemp(join(tmpdir(), 'ctc-adapter-test-'));
   const path = process.env.PATH;
@@ -21,11 +24,11 @@ async function fixture(t, body) {
 }
 
 for (const agent of ['omp', 'claude', 'codex']) {
-  test(`${agent} uses stdin, exact output protocol, isolation, and cleanup`, async t => {
-    const f = await fixture(t, `if(process.argv[1].endsWith('/claude')) process.stdout.write(JSON.stringify({type:'result',is_error:false,result:stdin})); else if(process.argv[1].endsWith('/codex')) { fs.writeFileSync(args[args.indexOf('--output-last-message')+1],stdin); process.stdout.write('non-final logs'); } else process.stdout.write(stdin);`);
+  for (const outputSchema of [undefined, privateSchema]) test(`${agent} uses stdin, exact output protocol, isolation, and cleanup${outputSchema ? ' with schema' : ''}`, async t => {
+    const f = await fixture(t, `if(process.argv[1].endsWith('/claude')) process.stdout.write(JSON.stringify({type:'result',subtype:'success',is_error:false,result:stdin,...(args.includes('--json-schema') ? {structured_output:JSON.parse(stdin)} : {})})); else if(process.argv[1].endsWith('/codex')) { fs.writeFileSync(args[args.indexOf('--output-last-message')+1],stdin); process.stdout.write('non-final logs'); } else process.stdout.write(stdin);`);
     const prompt = '{"private":"$(touch NEVER); @AGENTS.md"}';
     const model = 'model; touch NEVER';
-    assert.equal(await runAgentPrompt(agent, prompt, { model }), prompt);
+    assert.equal(await runAgentPrompt(agent, prompt, { model, outputSchema }), prompt);
     const calls = await f.calls();
     const call = calls.at(-1);
     assert.equal(call.stdin, prompt);
@@ -38,13 +41,21 @@ for (const agent of ['omp', 'claude', 'codex']) {
     await assert.rejects(access(join(f.dir, 'NEVER')), { code: 'ENOENT' });
     if (agent === 'omp') {
       assert.deepEqual(calls.slice(0, 2).map(c => c.args), [['auth', 'export'], ['auth', 'import', '-']]);
-      for (const flag of ['--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-context-files', '--no-session']) assert.ok(call.args.includes(flag));
+      for (const flag of ['--no-tools', '--no-extensions', '--no-skills', '--no-rules', '--no-context-files', '--no-session', '--no-lsp', '--no-pty', '--no-title', '--offline']) assert.ok(call.args.includes(flag));
       assert.equal(call.args[call.args.indexOf('--mode') + 1], 'text');
+      assert.ok(!call.args.some(value => /schema/.test(value)));
     } else if (agent === 'claude') {
       assert.equal(call.args[call.args.indexOf('--tools') + 1], '');
       assert.equal(call.args[call.args.indexOf('--output-format') + 1], 'json');
       for (const flag of ['--safe-mode', '--restricted', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']) assert.ok(call.args.includes(flag));
+      assert.equal(call.args[call.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+      assert.equal(call.args[call.args.indexOf('--setting-sources') + 1], '');
+      assert.equal(call.args.includes('--json-schema'), outputSchema !== undefined);
+      if (outputSchema) assert.deepEqual(JSON.parse(call.args[call.args.indexOf('--json-schema') + 1]), outputSchema);
     } else {
+      assert.ok(call.args.includes('--json'));
+      assert.equal(call.args.includes('--output-schema'), outputSchema !== undefined);
+      if (outputSchema) await assert.rejects(access(call.args[call.args.indexOf('--output-schema') + 1]), { code: 'ENOENT' });
       assert.equal(call.args[call.args.indexOf('--sandbox') + 1], 'read-only');
       assert.equal(call.args[call.args.indexOf('--ask-for-approval') + 1], 'never');
       for (const flag of ['--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check']) assert.ok(call.args.includes(flag));
@@ -89,10 +100,83 @@ test('rejects invalid Claude result envelope and oversized output', async t => {
   await assert.rejects(runAgentPrompt('omp', 'prompt'), /output limit/);
 });
 
+test('Claude returns only the native structured object, not prose or drafts', async t => {
+  await fixture(t, `process.stdout.write(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'First draft: {"ok":false}\\nCorrection: {"ok":true}',structured_output:{ok:true}}));`);
+  assert.deepEqual(JSON.parse(await runAgentPrompt('claude', 'Give prose and two drafts', { outputSchema: schema })), { ok: true });
+});
+
+for (const envelope of [
+  { type: 'result', subtype: 'success', is_error: false },
+  { type: 'result', subtype: 'success', is_error: false, structured_output: null },
+  { type: 'result', subtype: 'success', is_error: false, structured_output: [] },
+  { type: 'result', subtype: 'success', is_error: false, structured_output: '{"ok":true}' },
+  { type: 'result', subtype: 'success', is_error: true, structured_output: { ok: true } },
+  { type: 'result', subtype: 'error_max_structured_output_retries', is_error: false, structured_output: { ok: true } },
+  null,
+]) {
+  test(`Claude rejects unsuccessful structured output: ${JSON.stringify(envelope)}`, async t => {
+    const f = await fixture(t, `process.stdout.write(${JSON.stringify(JSON.stringify(envelope && { ...envelope, result: '{"ok":true}' }))});`);
+    await assert.rejects(runAgentPrompt('claude', 'Return an object', { outputSchema: schema }), /successful structured object/);
+    await assert.rejects(access((await f.calls()).at(-1).cwd), { code: 'ENOENT' });
+  });
+}
+
+test('Codex stores the exact schema privately and reads only the final-message file', async t => {
+  const f = await fixture(t, `
+    const schemaFile = args[args.indexOf('--output-schema')+1];
+    const finalFile = args[args.indexOf('--output-last-message')+1];
+    fs.writeFileSync(finalFile, JSON.stringify({
+      schema: JSON.parse(fs.readFileSync(schemaFile,'utf8')),
+      schemaMode: fs.statSync(schemaFile).mode & 0o777,
+      rootMode: fs.statSync(process.cwd()+'/..').mode & 0o777,
+      schemaFile, finalFile
+    }));
+    process.stdout.write(JSON.stringify({type:'item.completed',item:{text:'{"ok":false}'}})+'\\n');
+  `);
+  const result = JSON.parse(await runAgentPrompt('codex', 'Return an object', { outputSchema: schema }));
+  assert.deepEqual(result.schema, schema);
+  assert.equal(result.schemaMode, 0o600);
+  assert.equal(result.rootMode, 0o700);
+  await assert.rejects(access(result.schemaFile), { code: 'ENOENT' });
+  await assert.rejects(access(result.finalFile), { code: 'ENOENT' });
+});
+
+for (const [name, body, expected] of [
+  ['oversized final file', "fs.writeFileSync(args[args.indexOf('--output-last-message')+1], 'x'.repeat(8*1024*1024+1));", /unsafe or exceeds the output limit/],
+  ['symlink final file', "fs.symlinkSync(args[args.indexOf('--output-schema')+1], args[args.indexOf('--output-last-message')+1]);", /unsafe or exceeds the output limit/],
+  ['missing final file', "process.stdout.write('{\"ok\":true}');", { code: 'ENOENT' }],
+  ['oversized diagnostics', "process.stderr.write('x'.repeat(65537));", /stderr limit/],
+]) {
+  test(`schema-backed Codex rejects ${name} and cleans private files`, async t => {
+    const f = await fixture(t, body);
+    await assert.rejects(runAgentPrompt('codex', 'Return an object', { outputSchema: schema }), expected);
+    const call = (await f.calls()).at(-1);
+    await assert.rejects(access(call.cwd), { code: 'ENOENT' });
+    await assert.rejects(access(call.args[call.args.indexOf('--output-schema')+1]), { code: 'ENOENT' });
+  });
+}
+
+for (const agent of ['claude', 'codex']) {
+  test(`schema-backed ${agent} still enforces stdout byte limits`, async t => {
+    await fixture(t, "process.stdout.write('x'.repeat(9*1024*1024));");
+    await assert.rejects(runAgentPrompt(agent, 'Return an object', { outputSchema: schema }), /output limit/);
+  });
+  test(`schema-backed ${agent} still enforces deadlines and cleanup`, async t => {
+    const f = await fixture(t, 'setInterval(()=>{},1000);');
+    await assert.rejects(runAgentPrompt(agent, 'Return an object', { outputSchema: schema, timeoutMs: 400 }), /timed out/);
+    await assert.rejects(access((await f.calls()).at(-1).cwd), { code: 'ENOENT' });
+  });
+}
+
 test('rejects unsupported agents, invalid options, and oversized prompts before execution', async () => {
   await assert.rejects(runAgentPrompt('other', 'prompt'), /Agent must/);
   await assert.rejects(runAgentPrompt('omp', ''), /nonempty/);
   await assert.rejects(runAgentPrompt('omp', 'prompt', { timeoutMs: 0 }), /timeoutMs/);
   await assert.rejects(runAgentPrompt('omp', 'prompt', { model: '--bad' }), /Model must/);
   await assert.rejects(runAgentPrompt('omp', 'x'.repeat(17 * 1024 * 1024)), /16 MiB/);
+  const circular = {};
+  circular.self = circular;
+  for (const outputSchema of [null, [], 'object', 3, true, new Date(), circular, { value: 1n }]) {
+    await assert.rejects(runAgentPrompt('claude', 'prompt', { outputSchema }), /outputSchema must/);
+  }
 });
