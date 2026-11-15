@@ -270,6 +270,31 @@ test('captured contextual commit references are valid but cannot alone prove a f
   })), /fabricated evidence reference/);
 });
 
+test('patch citations recognize signed changed hunk content, not headers or context', async () => {
+  for (const quote of ['+- item', '++value;', '+++value;', '---value;', '-+value;', '+--value;']) {
+    const input = capture([1]);
+    const pr = input.pullRequests[0];
+    pr.sources = [];
+    const body = quote.startsWith('+') ? `-old\n${quote}` : `${quote}\n+fixed`;
+    const patch = `--- a/input.js\n+++ b/input.js\n@@ -1 +1 @@\n${body}`;
+    pr.files[0].patch = pr.commits[0].files[0].patch = patch;
+    const result = await analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), codeEvidence: [{ ref: captured.headSha, path: 'input.js', quote }] }),
+    }));
+    assert.equal(result.findings[0].status, 'confirmed');
+  }
+  for (const quote of ['+++ b/input.js', '--- a/input.js', '@@ -1,2 +1,2 @@', '+ token']) {
+    const input = capture([1]);
+    const pr = input.pullRequests[0];
+    pr.sources = [];
+    const patch = '--- a/input.js\n+++ b/input.js\n@@ -1,2 +1,2 @@\n context + token\n-old\n+fixed';
+    pr.files[0].patch = pr.commits[0].files[0].patch = patch;
+    await assert.rejects(analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), codeEvidence: [{ ref: captured.headSha, path: 'input.js', quote }] }),
+    })), /fabricated or missing captured code evidence/);
+  }
+});
+
 test('observed source changes can verify code when patches are unavailable', async () => {
   const input = capture([1]);
   input.pullRequests[0].files[0].patch = null;

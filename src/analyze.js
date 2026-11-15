@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const PROMPT_VERSION = 'causal-evidence-v5';
+const PROMPT_VERSION = 'causal-evidence-v6';
 const CATEGORIES = ['defect', 'suggestion', 'question', 'praise', 'administrative', 'unresolved'];
 const STATUSES = ['confirmed', 'unresolved', 'ignored'];
 const CONFIDENCES = ['high', 'medium', 'low'];
@@ -94,9 +94,14 @@ function evidenceFor(pr) {
   const changes = [];
   for (const [ref, files] of [[pr.url, pr.files], ...pr.commits.map(commit => [commit.sha, commit.files])]) {
     for (const file of files) {
-      if (typeof file.patch === 'string' && file.patch.split('\n').some(line => /^[+-](?![+-])/.test(line))) {
-        changes.push({ ref, path: file.path, patch: file.patch });
+      if (typeof file.patch !== 'string') continue;
+      const changedLines = [];
+      let inHunk = false;
+      for (const line of file.patch.split('\n')) {
+        if (line.startsWith('@@ ')) inHunk = true;
+        else if (inHunk && /^[+-]/.test(line)) changedLines.push(line);
       }
+      if (changedLines.length) changes.push({ ref, path: file.path, patch: file.patch, changedLines });
     }
   }
   for (const source of pr.sources ?? []) {
@@ -346,7 +351,11 @@ export async function analyzeCapture(capture, { runAgent, previous = null, maxIn
         for (const field of ['ref', 'path', 'quote']) text(citation[field], `code evidence ${field}`);
         const observed = changes.some(change => {
           if (change.ref !== citation.ref || change.path !== citation.path) return false;
-          if (change.patch !== undefined) return change.patch.includes(citation.quote) && citation.quote.split('\n').some(line => /^[+-](?![+-])/.test(line));
+          if (change.patch !== undefined) {
+            if (!change.patch.includes(citation.quote)) return false;
+            return citation.quote.split('\n').some(line =>
+              /^[+-]/.test(line) && change.changedLines.some(changed => changed.startsWith(line)));
+          }
           return change.content.includes(citation.quote) && change.reviewed.some(before => !before.includes(citation.quote));
         });
         if (!result.evidence.includes(citation.ref) || !observed) fail('fabricated or missing captured code evidence');

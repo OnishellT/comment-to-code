@@ -128,3 +128,12 @@ Real installed resumes reused 35 findings and advanced to 112/115 saved findings
 - Keep eligible changed-code records and exact code-quotation validation unchanged. A contextual baseline SHA alone cannot establish an observed fix.
 - Add focused typed-reference acceptance and baseline-only/fabricated-reference rejection coverage. Replay the preserved real failing batches without filesystem writes, then install a separate candidate and resume the complete unchanged captures.
 - Keep compatible already-validated v5 findings: this corrects the implementation of the existing literal-captured-reference contract rather than changing its response schema or recurrence threshold. Obtain incremental independent review and final CI before merge.
+
+## Issue #13: Recognize unified-diff hunk structure
+
+The next installed replay correctly reused 112 findings but rejected a byte-exact added Markdown-list line beginning with adjacent plus/minus signs. The validator's two-character heuristic confused signed changed content with file headers.
+
+- Derive changed lines from unified-diff hunk bodies and reuse them for patch eligibility and citation checks. Do not special-case Markdown filenames or normalize quotes.
+- Preserve exact substring matching and support quoted changed-line prefixes while requiring them to match actual changed hunk lines. Headers/context alone remain ineligible; paired head-source proof remains unchanged.
+- Cover signed added/deleted content and header/context rejection; replay the exact preserved failing native response.
+- Advance the prompt/validation epoch to v6. Matching a real changed-hunk line is stricter than the old substring/sign check, which could admit a sign-prefixed fragment taken from context. Persisted findings do not retain their original code quotations, so old accepted proof cannot be revalidated from those files. Preserve historical v5 artifacts, but do not reuse them as v6 findings.
