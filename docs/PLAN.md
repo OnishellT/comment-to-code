@@ -80,3 +80,24 @@ Local .comment-to-code data must not become tracked accidentally: installer/firs
 - Each adapter is exercised through real subprocess execution against a fixture executable with exact stdin/output protocol; at least one real installed agent analyzes a small reviewed-code fixture end-to-end. Never call fake fixtures real model verification.
 - Installed package smoke in a temporary checkout: install skills for all three agents, invoke --help, capture a real GitHub project, run an actual model analysis scenario, inspect generated files. No tests asserting source text/wiring only.
 - CI runs npm test on Node 22. Independent reviewer receives feature contract, ADR, issue acceptance, diff, and verification evidence. Fix actual problems, not speculative abstractions. Merge only after all criteria and checks pass.
+
+## Issue #5: Literal evidence-reference contract
+
+Real complete-history analysis failed with two installed backends because classification evidence entries mixed a captured URL with explanatory prose. Strict reference validation rejected publication correctly. Fix the producer contract, not the rejecting validator.
+
+1. Make evidence an explicit array of literal captured reference strings, never Markdown or explanations. Non-actionable ignored findings need no evidence references. Reuse the existing evidence owner if an allowlist improves clarity.
+2. Advance the prompt version so content-based finding caches cannot reuse the old contract. Keep exact citation matching, observed-code quotation checks, complete comment accounting, and promotion thresholds unchanged.
+3. Do not normalize malformed references, add heuristic bot filtering, retry automatically, or accept partial analysis. Do not add prompt-wording tests.
+4. Run focused analysis/publication checks after the change, then install the candidate artifact separately and replay the unchanged complete failing capture with a real backend in an isolated checkout. Inspect every disposition and preserve human instruction bytes.
+5. Judge rejected or unmerged safety discussions as evidence of concerns, not automatically as verified recurring fixes. Report remaining failures without manufacturing documents.
+6. Review the exact diff and real evidence in a PR closing #5; merge only after independent review and green CI. Keep all private captures, responses, and generated project documents local.
+
+## Issue #6: Technical content inside workflow comments
+
+The first complete candidate replay fixed literal references and correctly produced no promoted rules, but collapsed a substantive rejected/unmerged safety discussion into administration with no retained explanation. Classify the technical content, not the workflow wrapper.
+
+1. Distinguish pure administration or a walkthrough without a reported defect from comments that explicitly report failures, safety gaps, or a rejected technical approach. Do not special-case a repository, comment ID, author, or bot.
+2. Retain supported cause/resolution information for substantive technical comments even when ignored or unresolved. Closure, rejection, and an unmerged branch must not be inferred to establish a verified fix.
+3. Advance the prompt contract version and preserve strict validation. Do not introduce a rule without two independently verified incidents.
+4. Preserve the first candidate artifact and report as a real semantic failure. Install a separate revised artifact and replay the same complete capture without a prior-analysis cache; inspect all dispositions and actual documents.
+5. Include both #5 and #6 acceptance evidence and fixture-normalization limits in independent PR review before merge. A literal-format pass alone is not full causal-quality acceptance.

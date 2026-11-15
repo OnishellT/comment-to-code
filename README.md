@@ -50,6 +50,10 @@ Installed CLI versions must support these flags (interfaces inspected with OMP 1
 
 `rules.md` contains promoted rules and evidence. Managed blocks in `AGENTS.md` and `CLAUDE.md` point to it without replacing human-written text. Candidates and explicit dispositions stay in `analysis.json`. Re-running uses content-based finding caches and re-consolidates incidents; old groups do not inflate counts. There are **no runtime guarantees, enforcement hooks, or automatic fixes**.
 
+Finding evidence entries must be exact captured URL or commit SHA strings, never explanations or Markdown; ignored non-actionable findings may use an empty evidence array. Malformed references fail validation rather than being repaired or published.
+
+Technical failures and rejected implementations remain technical findings even inside closure/status comments, with supported causes and dispositions retained. Pure workflow notices or walkthroughs without reported defects remain administrative. Rejection or an unmerged branch does not prove a fix or recurrence.
+
 ## Uninstall
 
 ```sh
