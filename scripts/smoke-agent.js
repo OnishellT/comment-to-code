@@ -88,17 +88,17 @@ simulation.comments.push({
 capture.pullRequests.push(simulation);
 capture.pullRequests.push(pullRequest(9, {
   path: 'src/session-refresh.js', title: 'Prevent stale refresh from replacing a newer session',
-  body: 'Concurrent refreshes share a durable session row. A response may commit only if the generation it read is still current. The compare-and-swap operation atomically checks the generation, writes the value and advances the generation on success.',
-  before: 'export async function refresh(store, id, token) { const session = await store.readSession(id); const next = await exchange(token); if ((await store.readSession(id)).generation === session.generation) await store.writeSession(id, next); }\n',
-  after: 'export async function refresh(store, id, token) { const session = await store.readSession(id); const next = await exchange(token); return store.compareAndSwapSession(id, session.generation, next); }\n',
+  body: 'Concurrent refreshes share an existing SQLite session row. A response may commit only if its observed generation is still current. Successful writes advance that generation.',
+  before: 'export async function refresh(db, id, token) { const session = await db.prepare("SELECT generation FROM sessions WHERE id = ?").bind(id).first(); const next = await exchange(token); if ((await db.prepare("SELECT generation FROM sessions WHERE id = ?").bind(id).first()).generation === session.generation) await db.prepare("UPDATE sessions SET value = ?, generation = generation + 1 WHERE id = ?").bind(next, id).run(); }\n',
+  after: 'export async function refresh(db, id, token) { const session = await db.prepare("SELECT generation FROM sessions WHERE id = ?").bind(id).first(); const next = await exchange(token); return db.prepare("UPDATE sessions SET value = ?, generation = generation + 1 WHERE id = ? AND generation = ?").bind(next, id, session.generation).run(); }\n',
   comment: 'The generation check and write are separate operations: another refresh can commit between them, then this stale response overwrites it. Compare the expected generation and update the session atomically.',
 }));
 capture.pullRequests.push(pullRequest(31, {
   path: 'src/render-cache.js', title: 'Reject stale background render results',
-  body: 'Invalidation advances a durable cache generation. An in-flight render must not replace a newer cache value. The compare-and-swap operation atomically checks the generation, writes the value and advances the generation on success.',
-  before: 'export async function render(cache, key) { const entry = await cache.read(key); const html = await buildPage(key); if ((await cache.read(key)).generation === entry.generation) await cache.write(key, html); }\n',
-  after: 'export async function render(cache, key) { const entry = await cache.read(key); const html = await buildPage(key); return cache.compareAndSwap(key, entry.generation, html); }\n',
-  comment: 'Invalidation or another render can commit after the generation read but before cache.write, letting stale HTML overwrite newer content. Atomically compare the expected generation and write.',
+  body: 'Invalidation advances an existing SQLite cache row generation. An in-flight render must not replace a value from a newer generation.',
+  before: 'export async function render(db, key) { const entry = await db.prepare("SELECT generation FROM cache WHERE key = ?").bind(key).first(); const html = await buildPage(key); if ((await db.prepare("SELECT generation FROM cache WHERE key = ?").bind(key).first()).generation === entry.generation) await db.prepare("UPDATE cache SET html = ?, generation = generation + 1 WHERE key = ?").bind(html, key).run(); }\n',
+  after: 'export async function render(db, key) { const entry = await db.prepare("SELECT generation FROM cache WHERE key = ?").bind(key).first(); const html = await buildPage(key); return db.prepare("UPDATE cache SET html = ?, generation = generation + 1 WHERE key = ? AND generation = ?").bind(html, key, entry.generation).run(); }\n',
+  comment: 'Invalidation or another render can commit after the generation read but before the UPDATE, letting stale HTML overwrite newer content. Atomically compare the expected generation and write.',
 }));
 for (let number = 20; number <= 30; number++) {
   const pr = optionalCollection(number, `src/collection-${number}.js`, `collection${number}`, number % 2 ? 'null' : 'undefined');
