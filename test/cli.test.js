@@ -31,6 +31,73 @@ async function checkout(t) {
   return { root, nested, cli, identify };
 }
 
+function reviewedHistory(counts = [17, 1]) {
+  return {
+    ...evidence(),
+    pullRequests: counts.map((count, index) => {
+      const number = index + 1;
+      const sha = String(number).repeat(40);
+      const patch = '@@ -1 +1 @@\n-return input.value;\n+return input?.value;';
+      return {
+        number, title: 'Handle absent input', body: '', url: `${repository.url}/pull/${number}`,
+        state: 'MERGED', mergedAt: '2026-01-01T00:00:00Z', baseSha: '0'.repeat(40), headSha: sha,
+        comments: Array.from({ length: count }, (_, i) => ({
+          id: `inline:${number}:${String(i + 1).padStart(2, '0')}`, kind: 'inline', body: 'PRIVATE REVIEW: this input can be absent.',
+          url: `${repository.url}/pull/${number}#discussion_r${i + 1}`, author: 'reviewer',
+          createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+          threadId: `thread:${number}`, path: 'input.js', line: 1, originalCommitId: '0'.repeat(40), diffHunk: patch,
+        })),
+        commits: [{ sha, message: 'Guard absent input', authoredAt: '2026-01-01T00:00:00Z', files: [{ path: 'input.js', previousPath: null, status: 'modified', patch }], limitations: [] }],
+        files: [{ path: 'input.js', previousPath: null, status: 'modified', patch }],
+        sources: [], limitations: [],
+      };
+    }),
+  };
+}
+
+// Injectable transport fixtures exercise the real CLI/analyzer/publisher, not a real provider.
+function fixtureAgent({ beforeBatch, consolidate } = {}) {
+  const batches = [];
+  const consolidations = [];
+  return {
+    batches, consolidations,
+    async runAgent(_agent, prompt) {
+      const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
+      if (data.targets) {
+        batches.push(data.targets);
+        await beforeBatch?.(data, batches.length);
+        return JSON.stringify({ findings: data.targets.map(({ prNumber, commentId }) => {
+          const pr = data.pullRequests.find(pr => pr.number === prNumber);
+          return {
+            commentId, category: 'defect', rootCause: 'Dereferencing optional input without an absence guard',
+            prevention: 'Guard optional inputs before dereferencing them.', resolution: 'Optional chaining guards absent input.',
+            evidence: [pr.commits[0].sha], confidence: 'high', status: 'confirmed', outcome: 'verified-fix',
+            codeEvidence: [{ ref: pr.commits[0].sha, path: 'input.js', quote: '+return input?.value;' }],
+          };
+        }) });
+      }
+      consolidations.push(data);
+      return JSON.stringify(consolidate ? await consolidate(data) : { groups: [{
+        rootCause: 'Dereferencing optional input without an absence guard',
+        prevention: 'Guard optional inputs before dereferencing them.',
+        incidents: data.findings.map(finding => ({ commentIds: [finding.commentId], explanation: 'An observed absent-input defect.' })),
+      }] });
+    },
+  };
+}
+
+async function publishedArtifacts(root) {
+  const files = ['.comment-to-code/analysis.json', 'rules.md', 'AGENTS.md', 'CLAUDE.md'];
+  return Object.fromEntries(await Promise.all(files.map(async file => [file, await readFile(join(root, file), 'utf8')])));
+}
+
+async function checkpointEntries(root) {
+  const directory = join(root, '.comment-to-code/findings');
+  return Promise.all((await readdir(directory)).sort().map(async name => ({
+    name, path: join(directory, name), finding: JSON.parse(await readFile(join(directory, name), 'utf8')),
+  })));
+}
+
 test('real executable supports help/version and rejects invalid options', async t => {
   const { cli } = await checkout(t);
   assert.match((await cli('--help')).stdout, /capture[\s\S]*analyze[\s\S]*run/);
@@ -129,4 +196,180 @@ test('CLI passes selected backend/model/input limit through real analysis bounda
   });
   assert.equal(received.maxInputBytes, 4096);
   assert.deepEqual(received.capture.repository, repository);
+});
+
+test('validated batches survive provider failure and resume only remaining targets without extra incidents', async t => {
+  const { root, identify } = await checkout(t);
+  let progress = '';
+  const options = { cwd: root, identify, stdout: { write(text) { progress += text; } } };
+  await writeFile(join(root, 'AGENTS.md'), 'Human instructions.\n');
+  await main(['run', '--agent', 'omp'], { ...options, capture: async () => evidence() });
+  const previous = await publishedArtifacts(root);
+  const input = reviewedHistory();
+  await main(['capture'], { ...options, capture: async () => input });
+  const interrupted = fixtureAgent({ beforeBatch: (_data, count) => { if (count === 2) throw new Error('provider unavailable'); } });
+  await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: interrupted.runAgent }), /provider unavailable/);
+  assert.deepEqual(interrupted.batches.map(batch => batch.length), [16, 2]);
+  assert.deepEqual(await publishedArtifacts(root), previous);
+  const checkpoints = await checkpointEntries(root);
+  assert.equal(checkpoints.length, 16);
+  assert.equal((await stat(join(root, '.comment-to-code/findings'))).mode & 0o777, 0o700);
+  for (const entry of checkpoints) {
+    assert.match(entry.name, /^[a-f0-9]{64}\.json$/);
+    assert.equal(entry.name, `${entry.finding.inputHash}.json`);
+    assert.equal((await stat(entry.path)).mode & 0o777, 0o600);
+    assert.equal(entry.finding.status, 'confirmed');
+    assert.equal(Object.hasOwn(entry.finding, 'groups'), false);
+    assert.equal(Object.hasOwn(entry.finding, 'rules'), false);
+  }
+  assert.match(progress, /Checkpointed 16 finding\(s\) \(16 this run\)/);
+  assert.doesNotMatch(progress, /PRIVATE REVIEW|return input|github\.com/);
+  const resumed = fixtureAgent();
+  const analysis = await main(['analyze', '--agent', 'omp'], { ...options, runAgent: resumed.runAgent });
+  const cachedIds = new Set(checkpoints.map(entry => entry.finding.commentId));
+  assert.deepEqual(resumed.batches.flat().map(target => target.commentId).sort(), input.pullRequests.flatMap(pr => pr.comments.map(comment => comment.id)).filter(id => !cachedIds.has(id)).sort());
+  assert.deepEqual(analysis.stats, { comments: 18, analyzed: 2, cached: 16, rules: 1, candidates: 0 });
+  assert.equal(new Set(analysis.findings.map(finding => finding.commentId)).size, 18);
+  assert.equal(resumed.consolidations.length, 1);
+  assert.equal(resumed.consolidations[0].findings.length, 18);
+  assert.equal(analysis.groups[0].incidents.length, 2);
+  assert.equal(analysis.rules[0].incidentCount, 2);
+  assert.equal((await checkpointEntries(root)).length, 18);
+  assert.deepEqual(JSON.parse(await readFile(join(root, '.comment-to-code/analysis.json'), 'utf8')), analysis);
+  assert.match(progress, /Reused 16 checkpoint finding\(s\)/);
+  assert.match(await readFile(join(root, 'AGENTS.md'), 'utf8'), /^Human instructions\.\n/);
+
+  // A complete previous analysis wins before independent checkpoint lookup.
+  await writeFile(checkpoints[0].path, 'not-json');
+  const previousOnly = fixtureAgent();
+  const cached = await main(['analyze', '--agent', 'omp'], { ...options, runAgent: previousOnly.runAgent });
+  assert.equal(previousOnly.batches.length, 0);
+  assert.equal(cached.stats.cached, 18);
+  assert.equal(cached.rules[0].incidentCount, 2);
+
+  // Every finding in a changed PR has a new context hash; stale checkpoints cannot satisfy it.
+  input.pullRequests[0].comments[0].body += ' The reviewed context changed.';
+  await main(['capture'], { ...options, capture: async () => input });
+  const changed = fixtureAgent();
+  const refreshed = await main(['analyze', '--agent', 'omp'], { ...options, runAgent: changed.runAgent });
+  assert.deepEqual(changed.batches.map(batch => batch.length), [16, 1]);
+  assert.equal(refreshed.stats.analyzed, 17);
+  assert.equal(refreshed.stats.cached, 1);
+  assert.equal(refreshed.rules[0].incidentCount, 2);
+});
+
+test('consolidation and publication failure retain checkpoints and previous complete documents', async t => {
+  for (const failure of ['consolidation', 'publication']) await t.test(failure, async t => {
+    const { root, identify } = await checkout(t);
+    const options = { cwd: root, identify, stdout: output };
+    await main(['run', '--agent', 'omp'], { ...options, capture: async () => evidence() });
+    const agents = await readFile(join(root, 'AGENTS.md'), 'utf8');
+    if (failure === 'publication') await writeFile(join(root, 'AGENTS.md'), `${agents}\n<!-- comment-to-code:start -->\n`);
+    const previous = await publishedArtifacts(root);
+    await main(['capture'], { ...options, capture: async () => reviewedHistory([1, 1]) });
+    const interrupted = fixtureAgent(failure === 'consolidation' ? { consolidate: () => ({ groups: [] }) } : {});
+    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: interrupted.runAgent }), failure === 'consolidation' ? /omitted/ : /block|marker/i);
+    assert.deepEqual(await publishedArtifacts(root), previous);
+    assert.equal((await checkpointEntries(root)).length, 2);
+    if (failure === 'publication') await writeFile(join(root, 'AGENTS.md'), agents);
+    const resumed = fixtureAgent();
+    const analysis = await main(['analyze', '--agent', 'omp'], { ...options, runAgent: resumed.runAgent });
+    assert.equal(resumed.batches.length, 0);
+    assert.equal(analysis.stats.cached, 2);
+    assert.equal(analysis.rules[0].incidentCount, 2);
+  });
+});
+
+test('checkpoint loads reject corrupt, mismatched, tracked, and unsafe paths before model use', async t => {
+  for (const scenario of ['json', 'null', 'hash', 'identity', 'evidence', 'tracked', 'directory-symlink', 'file-symlink', 'nonregular']) await t.test(scenario, async t => {
+    const { root, identify } = await checkout(t);
+    const options = { cwd: root, identify, stdout: output };
+    await main(['capture'], { ...options, capture: async () => reviewedHistory([1]) });
+    const initial = fixtureAgent({ consolidate: () => ({ groups: [] }) });
+    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: initial.runAgent }), /omitted/);
+    const [entry] = await checkpointEntries(root);
+    if (scenario === 'json') await writeFile(entry.path, '{');
+    else if (scenario === 'null') await writeFile(entry.path, 'null');
+    else if (scenario === 'hash') await writeFile(entry.path, JSON.stringify({ ...entry.finding, inputHash: 'a'.repeat(64) === entry.finding.inputHash ? 'b'.repeat(64) : 'a'.repeat(64) }));
+    else if (scenario === 'identity') await writeFile(entry.path, JSON.stringify({ ...entry.finding, commentId: 'invented' }));
+    else if (scenario === 'evidence') await writeFile(entry.path, JSON.stringify({ ...entry.finding, evidence: ['https://example.invalid/fabricated'] }));
+    else if (scenario === 'tracked') await exec('git', ['add', '-f', entry.path], { cwd: root });
+    else if (scenario === 'nonregular') { await rm(entry.path); await mkdir(entry.path); }
+    else {
+      const outside = await mkdtemp(join(tmpdir(), 'ctc-checkpoint-outside-'));
+      t.after(() => rm(outside, { recursive: true, force: true }));
+      await writeFile(join(outside, entry.name), JSON.stringify(entry.finding));
+      if (scenario === 'directory-symlink') {
+        await rm(join(root, '.comment-to-code/findings'), { recursive: true });
+        await symlink(outside, join(root, '.comment-to-code/findings'));
+      } else {
+        await rm(entry.path);
+        await symlink(join(outside, entry.name), entry.path);
+      }
+    }
+    let called = false;
+    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: async () => { called = true; throw new Error('must not call model'); } }), /Malformed|input hash|identity|fabricated|tracked|symlink|regular file/i);
+    assert.equal(called, false);
+    await assert.rejects(stat(join(root, '.comment-to-code/analysis.json')), { code: 'ENOENT' });
+  });
+});
+
+test('checkpoint callbacks reject non-digest path names', async t => {
+  const { root, identify } = await checkout(t);
+  const options = { cwd: root, identify, stdout: output };
+  await main(['capture'], { ...options, capture: async () => evidence() });
+  for (const inputHash of ['../outside', 'A'.repeat(64), 'a'.repeat(63), null]) {
+    for (const operation of ['load', 'save']) {
+      await assert.rejects(main(['analyze', '--agent', 'omp'], {
+        ...options,
+        analyze: async (_capture, callbacks) => operation === 'load' ? callbacks.loadFinding(inputHash) : callbacks.saveFindings([{ inputHash }]),
+      }), /Invalid finding input hash/);
+    }
+  }
+  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+});
+
+test('checkpoint writes recheck effective ignore and tracked paths after model execution', async t => {
+  for (const scenario of ['unignored', 'temporary-unignored', 'tracked', 'symlink']) await t.test(scenario, async t => {
+    const { root, identify } = await checkout(t);
+    const options = { cwd: root, identify, stdout: output };
+    await main(['run', '--agent', 'omp'], { ...options, capture: async () => evidence() });
+    const previous = await publishedArtifacts(root);
+    await main(['capture'], { ...options, capture: async () => reviewedHistory([1]) });
+    const agent = fixtureAgent({ beforeBatch: async () => {
+      if (scenario === 'tracked') {
+        await writeFile(join(root, '.comment-to-code/new-private.json'), '{}');
+        await exec('git', ['add', '-f', '.comment-to-code/new-private.json'], { cwd: root });
+      } else if (scenario === 'symlink') {
+        await symlink(root, join(root, '.comment-to-code/findings'));
+      } else {
+        await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n${scenario === 'temporary-unignored' ? '/.comment-to-code/findings/*.json\n' : ''}`);
+      }
+    } });
+    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: agent.runAgent }), /ignore|tracked|symlink/i);
+    assert.deepEqual(await publishedArtifacts(root), previous);
+    assert.equal(agent.consolidations.length, 0);
+    if (scenario !== 'symlink') await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  });
+});
+
+test('an invalid last finding rejects the entire batch before creating checkpoints', async t => {
+  const { root, identify } = await checkout(t);
+  const options = { cwd: root, identify, stdout: output };
+  await main(['run', '--agent', 'omp'], { ...options, capture: async () => evidence() });
+  const previous = await publishedArtifacts(root);
+  await main(['capture'], { ...options, capture: async () => reviewedHistory([16]) });
+  const agent = fixtureAgent();
+  await assert.rejects(main(['analyze', '--agent', 'omp'], {
+    ...options,
+    runAgent: async (...args) => {
+      const response = JSON.parse(await agent.runAgent(...args));
+      response.findings.at(-1).codeEvidence[0].quote = '+invented code';
+      return JSON.stringify(response);
+    },
+  }), /fabricated|code evidence/i);
+  assert.equal(agent.batches.length, 1);
+  assert.equal(agent.consolidations.length, 0);
+  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  assert.deepEqual(await publishedArtifacts(root), previous);
 });

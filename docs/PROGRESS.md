@@ -38,7 +38,7 @@
 
 ## Current milestone
 
-PR #4 merged to main as f8bc3b6 after independent review and final CI passed 71 tests, with no failures or skips. The primary checkout was fast-forwarded. Issues #5 and #6 are the next isolated implementation/review loop, driven by the real-repository runs below; their acceptance evidence is not a claim of universal model correctness.
+PR #4 merged as f8bc3b6; scoped producer-contract issues #5/#6 merged through independently reviewed PR #7 as b77b201, with 71-test final CI green. User then explicitly approved batching and validated checkpoints before continuing the two incomplete large-history runs. Issues #8/#9 and ADR 0002 define the next main-based worktree loop; no full three-repository completion is claimed.
 
 ## Issue #5: Literal evidence-reference contract
 
@@ -57,3 +57,15 @@ PR #4 merged to main as f8bc3b6 after independent review and final CI passed 71 
 - Human instruction bytes were preserved with managed blocks appended. Original and v3 artifacts, captures, reports, and generated documents remain unchanged. The candidate-only link normalization means unmodified-checkout publication compatibility is still not established.
 - Final focused analysis, bounded-memory, and publication checks passed once: 33 tests, 0 failures. The actual alternate replay provides the semantic evidence for this history; these structural tests are not a substitute for provider judgment.
 - Parent inspected the substantive finding and endorsed its retained rejected-approach explanation, not a promoted rule: the captured history does not establish two independent verified fixes. An actual cached CLI rerun reported 29 cached, 0 newly analyzed, 0 rules/candidates; all three Markdown document hashes remained identical.
+
+## Issues #8/#9: Bounded and resumable classification
+
+- Complete original live captures cover 249 PRs and 4,322 comments. One corrected complete small-history run generated a legitimate empty rule set and retained substantive rejected technical concerns; larger runs remain incomplete.
+- A privately instrumented complete-history replay made 160 successful model subprocess calls before an explicit usage_limit_reached error on the next call. The failed prompt was 27,996 bytes: this observed blocker was quota, not context size. No partial findings survived the old all-or-nothing analyzer.
+- A separate synthetic Claude availability probe also returned 429/usage_limit_reached and a provider reset time. No account settings, purchases, safety bypasses or hidden quota workarounds were attempted.
+- User selected the recommended architectural correction: bounded batches and private validated-finding checkpoints before further retries. Preserve exact evidence validation, all-comment accounting, two independent incidents and complete-only publication.
+- Main-based Worktrunk branch feat/batch-checkpoint-analysis owns the implementation. BatchClassification owns the analyzer and its protocol fixtures; CheckpointPersistence owns CLI persistence/tests; parent owns shared contracts/docs, integration, installed real runs and contextual PR review.
+- Original working checkouts and all prior failure evidence remain untouched. Final project document sets are separate; retained human instructions, including subagent policies, are not newly learned rules.
+- Implementation is complete with no new dependencies or compatibility shim. Analyzer-focused checks passed 42 tests; CLI checks passed 27 tests after correcting an unsupported Git argument exposed by the first CLI run. These use fixture transports, not live-provider evidence.
+- Parent integrated verification: npm test passed 101 tests, 0 failures, 0 skips. The consumer-level interruption test retains 16 validated findings, resumes only 2 missing targets and publishes 18 findings as two independent incidents rather than 18 duplicate defects. Invalid batches, corrupt/symlinked/tracked/unignored checkpoint writes and prior-document preservation are covered.
+- Installed-candidate full-history execution and independent contextual PR review remain pending; the original nine-file user request is not yet complete.

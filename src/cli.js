@@ -53,20 +53,27 @@ async function git(cwd, args) {
   }
 }
 
+async function protectTrackedCache(cwd) {
+  if ((await git(cwd, ['ls-files', '--', '.comment-to-code'])).trim()) throw new Error('Private .comment-to-code cache contains tracked files; untrack it before continuing');
+}
+
+async function protectIgnoredPaths(cwd, paths) {
+  const ignored = (await git(cwd, ['check-ignore', '--no-index', '--', ...paths])).trim().split(/\r?\n/);
+  if (ignored.length !== paths.length || paths.some(path => !ignored.includes(path))) throw new Error('Cannot safely ignore private cache paths');
+}
+
 async function prepareCache(cwd) {
   const cache = join(cwd, '.comment-to-code');
   const ignore = join(cwd, '.gitignore');
   await safePath(cache, { directory: true });
   await safePath(ignore);
-  if ((await git(cwd, ['ls-files', '--', '.comment-to-code'])).trim()) throw new Error('Private .comment-to-code cache contains tracked files; untrack it before continuing');
+  await protectTrackedCache(cwd);
   let content = '';
   try { content = await readFile(ignore, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!content.split(/\r?\n/).includes('/.comment-to-code/')) {
     await atomicWrite(ignore, `${content}${content && !content.endsWith('\n') ? '\n' : ''}\n# Local private PR evidence (comment-to-code)\n/.comment-to-code/\n`, { mode: 0o644 });
   }
-  // Check the effective ignore rules, including any nested negations, before private writes.
-  const ignored = await git(cwd, ['check-ignore', '--no-index', '--', '.comment-to-code/capture.json', '.comment-to-code/analysis.json']);
-  if (ignored.trim().split(/\r?\n/).length !== 2) throw new Error('Cannot safely ignore private capture and analysis files');
+  await protectIgnoredPaths(cwd, ['.comment-to-code/', '.comment-to-code/capture.json', '.comment-to-code/analysis.json']);
   await mkdir(cache, { recursive: true, mode: 0o700 });
   await safePath(cache, { directory: true, absent: false });
   await chmod(cache, 0o700);
@@ -77,11 +84,52 @@ async function readJSON(path, { optional = false } = {}) {
   await safePath(path);
   let text;
   try { text = await readFile(path, 'utf8'); } catch (error) {
-    if (optional && error.code === 'ENOENT') return null;
+    if (optional && error.code === 'ENOENT') return undefined;
     if (error.code === 'ENOENT') throw new Error('No capture found. Run comment-to-code capture first.');
     throw error;
   }
-  try { return JSON.parse(text); } catch { throw new Error(`Malformed JSON cache: ${path}; recapture before analyzing`); }
+  try { return JSON.parse(text); } catch { throw new Error(`Malformed JSON cache: ${path}; remove or regenerate it before retrying`); }
+}
+
+function findingCheckpoints(cwd, cache, stdout) {
+  const directory = join(cache, 'findings');
+  let saved = 0;
+  let reused = 0;
+  const filename = inputHash => {
+    if (typeof inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(inputHash)) throw new Error('Invalid finding input hash; expected a lowercase SHA-256 digest');
+    return `${inputHash}.json`;
+  };
+  return {
+    async loadFinding(inputHash) {
+      const path = join(directory, filename(inputHash));
+      const finding = await readJSON(path, { optional: true });
+      if (finding === undefined) return null;
+      if (!finding || typeof finding !== 'object' || Array.isArray(finding) || finding.inputHash !== inputHash) throw new Error(`Malformed finding checkpoint: ${path}; input hash must match its filename`);
+      reused++;
+      return finding;
+    },
+    async saveFindings(findings) {
+      if (!findings.length) return;
+      const names = findings.map(finding => filename(finding.inputHash));
+      await safePath(directory, { directory: true });
+      for (const name of names) await safePath(join(directory, name));
+      // The directory must also stay ignored so atomic-write temporary files are private.
+      await protectTrackedCache(cwd);
+      await protectIgnoredPaths(cwd, ['.comment-to-code/findings/', ...names.map(name => `.comment-to-code/findings/${name}`)]);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await safePath(directory, { directory: true, absent: false });
+      await chmod(directory, 0o700);
+      for (let index = 0; index < findings.length; index++) {
+        await atomicWrite(join(directory, names[index]), `${JSON.stringify(findings[index], null, 2)}\n`);
+      }
+      saved += findings.length;
+      stdout.write(`Checkpointed ${findings.length} finding(s) (${saved} this run).\n`);
+    },
+    reportReuse() {
+      if (reused) stdout.write(`Reused ${reused} checkpoint finding(s).\n`);
+      reused = 0;
+    },
+  };
 }
 
 function sameRepository(actual, expected) {
@@ -121,10 +169,18 @@ export async function main(argv = process.argv.slice(2), { cwd = process.cwd(), 
     evidence = await readJSON(join(cache, 'capture.json'));
     validateCapture(evidence, project.repository);
   }
-  const previous = await readJSON(join(cache, 'analysis.json'), { optional: true });
+  const previous = await readJSON(join(cache, 'analysis.json'), { optional: true }) ?? null;
   if (previous && (previous.version !== 1 || !sameRepository(previous.repository, project.repository))) throw new Error('Previous analysis is outdated or belongs to another repository; remove its cache before retrying');
-  const analysis = await analyze(evidence, { runAgent: prompt => runAgent(options.agent, prompt, { model: options.model }), previous, ...(options.maxInputBytes === undefined ? {} : { maxInputBytes: options.maxInputBytes }) });
+  const { loadFinding, saveFindings, reportReuse } = findingCheckpoints(root, cache, stdout);
+  const analysis = await analyze(evidence, {
+    runAgent: prompt => { reportReuse(); return runAgent(options.agent, prompt, { model: options.model }); },
+    previous, loadFinding, saveFindings,
+    ...(options.maxInputBytes === undefined ? {} : { maxInputBytes: options.maxInputBytes }),
+  });
+  reportReuse();
   await safePath(join(cache, 'analysis.json'));
+  await protectTrackedCache(root);
+  await protectIgnoredPaths(root, ['.comment-to-code/', '.comment-to-code/analysis.json']);
   await publish(root, analysis);
   await atomicWrite(join(cache, 'analysis.json'), `${JSON.stringify(analysis, null, 2)}\n`);
   stdout.write(`Published ${analysis.rules.length} preventive rule(s). Review rules.md before use.\n`);

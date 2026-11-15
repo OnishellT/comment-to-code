@@ -101,3 +101,13 @@ The first complete candidate replay fixed literal references and correctly produ
 3. Advance the prompt contract version and preserve strict validation. Do not introduce a rule without two independently verified incidents.
 4. Preserve the first candidate artifact and report as a real semantic failure. Install a separate revised artifact and replay the same complete capture without a prior-analysis cache; inspect all dispositions and actual documents.
 5. Include both #5 and #6 acceptance evidence and fixture-normalization limits in independent PR review before merge. A literal-format pass alone is not full causal-quality acceptance.
+
+## Bounded, resumable full-history analysis
+
+User approved batching and validated checkpoints before further large-history retries. ADR 0002 is the shared implementation contract.
+
+1. Batch at most 16 sorted pending targets, packing complete distinct PR contexts within maxInputBytes; no context truncation or comment omission. Validate exact target coverage and PR-local code citations before saving a batch.
+2. Add optional loadFinding(inputHash) and saveFindings(findings) analyzer callbacks. Reuse complete previous analyses first, then matching validated checkpoints. Store only findings; reconsolidate current eligible findings once and publish only a complete result.
+3. CLI owns .comment-to-code/findings/<inputHash>.json with owner-only directories/files, atomic writes, safe paths and effective gitignore checks. A failed later call must retain validated progress and prior published documents; a resumed run must request only missing findings.
+4. Migrate every model fixture to {findings:[{commentId,...classificationFields}]}; no old single-result alias. Retain strict structural/citation/incident protections and the bounded-memory regression.
+5. Batch and checkpoint slices implement in parallel in this main-based worktree with disjoint ownership. Parent integrates, installs the real artifact, resumes full real captures and judges every promoted rule. Independent PR review and final CI precede merge.
