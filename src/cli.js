@@ -16,13 +16,14 @@ Learn preventive rules from GitHub PR history (no hooks or runtime enforcement).
 Usage:
   comment-to-code install [--agent omp|claude|codex|all]
   comment-to-code capture
-  comment-to-code analyze --agent omp|claude|codex [--model NAME] [--max-input-bytes N]
-  comment-to-code run --agent omp|claude|codex [--model NAME] [--max-input-bytes N]
+  comment-to-code analyze --agent omp|claude|codex [--model NAME] [--max-input-bytes N] [--agent-timeout-ms N]
+  comment-to-code run --agent omp|claude|codex [--model NAME] [--max-input-bytes N] [--agent-timeout-ms N]
   comment-to-code --help
   comment-to-code --version
 
 Capture includes ALL accessible PR history. Analyze sends evidence to your chosen
 model provider and may incur substantial costs. Review generated rules before use.
+Each agent call defaults to a 300000ms deadline; --agent-timeout-ms overrides it.
 `;
 
 function parseArguments(argv) {
@@ -33,7 +34,7 @@ function parseArguments(argv) {
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
     const flag = rest[index];
-    const allowed = command === 'install' ? ['--agent'] : command === 'capture' ? [] : ['--agent', '--model', '--max-input-bytes'];
+    const allowed = command === 'install' ? ['--agent'] : command === 'capture' ? [] : ['--agent', '--model', '--max-input-bytes', '--agent-timeout-ms'];
     if (!allowed.includes(flag) || Object.hasOwn(options, flag)) throw new Error(`Unknown or repeated option: ${flag}`);
     const value = rest[index + 1];
     if (!value || value.startsWith('-')) throw new Error(`Missing value for ${flag}`);
@@ -44,7 +45,9 @@ function parseArguments(argv) {
   if (['analyze', 'run'].includes(command) && !agent) throw new Error(`${command} requires --agent omp|claude|codex`);
   const bound = options['--max-input-bytes'];
   if (bound !== undefined && (!/^[1-9]\d*$/.test(bound) || !Number.isSafeInteger(Number(bound)))) throw new Error('--max-input-bytes must be a positive safe integer');
-  return { command, agent, model: options['--model'], maxInputBytes: bound === undefined ? undefined : Number(bound) };
+  const timeout = options['--agent-timeout-ms'];
+  if (timeout !== undefined && (!/^[1-9]\d*$/.test(timeout) || Number(timeout) > 2147483647)) throw new Error('--agent-timeout-ms must be an integer from 1 to 2147483647');
+  return { command, agent, model: options['--model'], maxInputBytes: bound === undefined ? undefined : Number(bound), agentTimeoutMs: timeout === undefined ? undefined : Number(timeout) };
 }
 
 async function git(cwd, args) {
@@ -173,7 +176,7 @@ export async function main(argv = process.argv.slice(2), { cwd = process.cwd(), 
   if (previous && (previous.version !== 1 || !sameRepository(previous.repository, project.repository))) throw new Error('Previous analysis is outdated or belongs to another repository; remove its cache before retrying');
   const { loadFinding, saveFindings, reportReuse } = findingCheckpoints(root, cache, stdout);
   const analysis = await analyze(evidence, {
-    runAgent: prompt => { reportReuse(); return runAgent(options.agent, prompt, { model: options.model }); },
+    runAgent: prompt => { reportReuse(); return runAgent(options.agent, prompt, { model: options.model, timeoutMs: options.agentTimeoutMs }); },
     previous, loadFinding, saveFindings,
     ...(options.maxInputBytes === undefined ? {} : { maxInputBytes: options.maxInputBytes }),
   });

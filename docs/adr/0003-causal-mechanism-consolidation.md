@@ -18,3 +18,7 @@ The first complete large-history output passed comment accounting and structural
 ## Verification and limits
 
 Extend the real-agent smoke with recurring index-access defects and unrelated singleton database defects alongside the existing recurring optional-collection defects and praise. Assert group membership and singleton candidacy, not wording. Re-consolidate the unchanged complete real capture with all findings reused, then judge resulting rules and evidence. Structural validation and a small fixture cannot prove full-history semantic correctness.
+
+## Full-history runtime budget (issue19)
+
+The installed complete-history reconsolidation exceeded the existing 300000ms agent deadline. Expose the existing adapter deadline as `--agent-timeout-ms` on `analyze`/`run`, rather than reduce evidence or force topic-level grouping for speed. Keep the five-minute default; explicit values must be positive integer milliseconds within Node's supported timer range (1..2147483647). Process-group termination, isolation and byte limits remain unchanged. A timed subprocess fixture verifies failure preserves previous artifacts and a sufficient bound completes analysis; complete-history semantic acceptance remains separate.
