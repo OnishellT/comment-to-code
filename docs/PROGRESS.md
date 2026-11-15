@@ -38,4 +38,22 @@
 
 ## Current milestone
 
-Implementation and independent review are complete. PR #4 is the authoritative final CI/merge record. Push the snapshot correction and review decisions, wait for green final CI, then merge at 5/5 confidence and fast-forward the primary main checkout. For subsequent features, restart the durable AGENTS.md loop rather than implementing directly on main.
+PR #4 merged to main as f8bc3b6 after independent review and final CI passed 71 tests, with no failures or skips. The primary checkout was fast-forwarded. Issues #5 and #6 are the next isolated implementation/review loop, driven by the real-repository runs below; their acceptance evidence is not a claim of universal model correctness.
+
+## Issue #5: Literal evidence-reference contract
+
+- Complete-history provider runs exposed evidence entries combining captured references with prose. Exact-reference rejection was correct; the producer prompt, not validation, needed clarification.
+- Prompt v3 requires unchanged literal captured URLs or commit SHAs, forbids explanation/Markdown inside evidence entries, and explicitly permits empty evidence for ignored non-actionable findings. The version change invalidates old finding caches. Citation, code-quote, accounting, and incident validators are unchanged.
+- Focused analysis, bounded-memory, and publication checks passed: 33 tests, 0 failures. No prompt-wording assertions were added; existing malformed-reference consumer tests retain rejection coverage.
+- One real Claude replay of the unchanged complete failing capture passed literal-reference validation and published a legitimate empty rule set. Review still found a substantive rejected-approach discussion classified as administration: formatting success is not full causal-quality acceptance, and no corrective retry was made.
+- That disposable checkout required an explicitly approved instruction-symlink-to-regular-file fixture normalization with identical human bytes. Publisher symlink refusal remains unchanged; this replay does not establish publication compatibility with the unmodified checkout.
+
+## Issue #6: Technical content inside workflow comments
+
+- The real prompt-v3 replay retained complete accounting but lost a substantive rejected-implementation discussion by classifying its workflow wrapper as administration. That artifact and report are preserved; passing literal-reference validation did not establish semantic correctness.
+- Prompt v4 distinguishes pure workflow notices and defect-free walkthroughs from explicit technical failures, safety gaps, and rejected implementations. Supported cause, prevention, and resolution/disposition remain available for non-confirmed technical findings; rejection and unmerged state do not prove a verified fix or recurrence. Strict validators remain unchanged.
+- A separate packed/installed v4 candidate used the same unchanged complete capture, no previous analysis cache, and the same explicitly approved disposable-checkout symlink normalization. The one actual Claude-default replay exited 1 at the subprocess boundary before accepted findings or publication. The CLI retained only its generic failure message; private provider stderr was not persisted. This is a provider-execution failure, not a v4 classification result.
+- The parent explicitly authorized one controlled alternate-backend replay with actual OMP and `openai-codex/gpt-6.1-sol`, using the same v4 source and unchanged complete capture. It succeeded with complete accounting: pure summaries/notices remained administrative, and the substantive rejected implementation retained a defect/ignored disposition with supported cause, prevention, and rejection explanation. No verified fix, candidate, or recurring rule was invented.
+- Human instruction bytes were preserved with managed blocks appended. Original and v3 artifacts, captures, reports, and generated documents remain unchanged. The candidate-only link normalization means unmodified-checkout publication compatibility is still not established.
+- Final focused analysis, bounded-memory, and publication checks passed once: 33 tests, 0 failures. The actual alternate replay provides the semantic evidence for this history; these structural tests are not a substitute for provider judgment.
+- Parent inspected the substantive finding and endorsed its retained rejected-approach explanation, not a promoted rule: the captured history does not establish two independent verified fixes. An actual cached CLI rerun reported 29 cached, 0 newly analyzed, 0 rules/candidates; all three Markdown document hashes remained identical.
