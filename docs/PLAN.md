@@ -119,3 +119,12 @@ Installed v5 runs exposed five quotes that were exact captured patch substrings 
 - Add generic valid/invalid examples and explicit copying guidance for diff markers and indentation. Never normalize model output or fabricate a prefix.
 - Keep the v5 response/eligibility contract and validators unchanged. This format-only guidance does not invalidate findings already validated under that same contract; reuse them on the installed replay.
 - Add the observed missing-marker substring to the existing quotation-rejection regression, then run its focused check once. Pack a separate artifact, verify real checkpoint reuse and actual citations, and request review of this correction before merge.
+
+## Issue #12: Separate contextual references from observed fixes
+
+Real installed resumes reused 35 findings and advanced to 112/115 saved findings before rejecting reviewed-commit SHAs already present in typed capture metadata and source refs. The contextual reference allowlist was incomplete, not the model's literal reference.
+
+- Include captured base/head, original review commit and source refs in contextual references. Never discover allowed SHAs by scanning arbitrary prose.
+- Keep eligible changed-code records and exact code-quotation validation unchanged. A contextual baseline SHA alone cannot establish an observed fix.
+- Add focused typed-reference acceptance and baseline-only/fabricated-reference rejection coverage. Replay the preserved real failing batches without filesystem writes, then install a separate candidate and resume the complete unchanged captures.
+- Keep compatible already-validated v5 findings: this corrects the implementation of the existing literal-captured-reference contract rather than changing its response schema or recurrence threshold. Obtain incremental independent review and final CI before merge.

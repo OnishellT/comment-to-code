@@ -85,7 +85,12 @@ function bounded(prompt, maxInputBytes) {
 }
 
 function evidenceFor(pr) {
-  const references = new Set([pr.url, ...pr.comments.map(comment => comment.url), ...pr.commits.map(commit => commit.sha)]);
+  const references = new Set([
+    pr.url, pr.baseSha, pr.headSha,
+    ...pr.comments.flatMap(comment => [comment.url, comment.originalCommitId]),
+    ...pr.commits.map(commit => commit.sha),
+    ...(pr.sources ?? []).map(source => source.ref),
+  ].filter(ref => typeof ref === 'string' && ref));
   const changes = [];
   for (const [ref, files] of [[pr.url, pr.files], ...pr.commits.map(commit => [commit.sha, commit.files])]) {
     for (const file of files) {
@@ -98,7 +103,6 @@ function evidenceFor(pr) {
     if (source.ref !== pr.headSha || typeof source.content !== 'string') continue;
     const reviewed = (pr.sources ?? []).filter(other => other.path === source.path && other.ref !== source.ref && typeof other.content === 'string' && other.content !== source.content);
     if (reviewed.length) {
-      references.add(source.ref);
       changes.push({ ref: source.ref, path: source.path, content: source.content, reviewed: reviewed.map(other => other.content) });
     }
   }

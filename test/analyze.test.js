@@ -245,6 +245,31 @@ test('fabricated, URL-only, missing, and non-change code evidence is rejected', 
   }
 });
 
+test('captured contextual commit references are valid but cannot alone prove a fix', async () => {
+  const input = capture([1]);
+  const pr = input.pullRequests[0];
+  pr.baseSha = 'a'.repeat(40);
+  pr.comments[0].originalCommitId = 'b'.repeat(40);
+  pr.sources[0].ref = 'c'.repeat(40);
+  const invented = 'd'.repeat(40);
+  pr.comments[0].body += ` A claim mentions ${invented}.`;
+  const contextual = [pr.baseSha, pr.comments[0].originalCommitId, pr.sources[0].ref];
+  const evidence = [...contextual, pr.headSha];
+  const result = await analyzeCapture(input, fixtureAgent({
+    classify: captured => ({ ...confirmed(captured), evidence }),
+  }));
+  assert.equal(result.findings[0].status, 'confirmed');
+  assert.deepEqual(result.findings[0].evidence, evidence.toSorted());
+  for (const ref of contextual) {
+    await assert.rejects(analyzeCapture(input, fixtureAgent({
+      classify: captured => ({ ...confirmed(captured), evidence: [ref] }),
+    })), /lacks captured fix\/code evidence/);
+  }
+  await assert.rejects(analyzeCapture(input, fixtureAgent({
+    classify: captured => ({ ...confirmed(captured), evidence: [...evidence, invented] }),
+  })), /fabricated evidence reference/);
+});
+
 test('observed source changes can verify code when patches are unavailable', async () => {
   const input = capture([1]);
   input.pullRequests[0].files[0].patch = null;
