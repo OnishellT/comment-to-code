@@ -150,3 +150,8 @@ PR #4 merged as f8bc3b6; scoped producer-contract issues #5/#6 merged through in
 - Parent rejects the query-pagination/filter/order bucket and requires revising the invitation-specific invariant reused for disconnect cleanup. The full45rule causal audit remains live; immutable catalog text is a demonstrated limitation, not a corrected policy in this integration.
 - The installed full real-cache repeat passed through the actual CLI consumer with a throwing backend guard:0model calls, all3Markdown hashes identical and the9934byte human instruction prefix preserved. Private evidence: thereelcapital-bounded-complete-cachecheck.log. Parent reports80540d7 CI150passed/0failed/0skipped. Integration PR24 CI also passed on evidence-only8f25064ae417afe45b8fb197cfd440064c7f8ce1 (run43773048652).
 - A separate-clone full-corpus Opus comparison is live. Complete Pi execution remains parent-owned; no Pi launch here, accepted Reel output, causal endorsement,5/5or main merge is claimed.
+
+## Integrated PR review
+
+- Independent contextual PR24 review at0233b33 found no introduced actionable source/integration bugs (confidence0.95), excluding semantic rule endorsement and complete integrated Pi execution. The native success proves its chosen citations, not exhaustive exercise of every allowed citation form.
+- Parent accepted the reviewer's KISS recommendation to remove constructor-echo SHA/field assertions from the native callback. The unrelated-head fixture, delivered-context accounting, strict citation validation and all causal membership/count/resume expectations remain unchanged. Runtime source and the frozen installed4ace8c9 artifact are unchanged; no additional provider generation is implied.

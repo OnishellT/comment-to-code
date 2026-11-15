@@ -106,17 +106,6 @@ try {
     runAgent: async (prompt, { outputSchema } = {}) => {
       const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
       if (data.targets) for (const pr of data.pullRequests) {
-        const [base, fix, head] = pr.commits;
-        assert.equal(base.sha, (pr.number * 3).toString(16).padStart(40, '0'));
-        assert.equal(fix.sha, (pr.number * 3 + 1).toString(16).padStart(40, '0'));
-        assert.equal(head.sha, (pr.number * 3 + 2).toString(16).padStart(40, '0'));
-        assert.equal(pr.baseSha, base.sha);
-        assert.equal(pr.headSha, head.sha);
-        assert.deepEqual(fix.files, [pr.files[0]], 'the fix commit owns the captured fix patch');
-        assert.deepEqual(head.files, [pr.files[1]], 'the later head changes only the unrelated README');
-        assert.equal(head.files[0].path, 'README.md');
-        assert.deepEqual(pr.sources.map(source => [source.ref, source.path]), [[base.sha, pr.files[0].path], [head.sha, pr.files[0].path]]);
-        assert.equal(fix.files[0].patch, `@@ -1 +1 @@\n-${pr.sources[0].content.trim()}\n+${pr.sources[1].content.trim()}`);
         unrelatedHeadPullRequests.add(pr.number);
       }
       if (!data.targets) {
