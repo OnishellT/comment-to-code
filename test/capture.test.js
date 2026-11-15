@@ -243,6 +243,24 @@ test('fails API errors, malformed pages, repeated pages, and missing items expli
   await assert.rejects(captureProject({ cwd, runGh: fixture({ pulls: [pull(1, { changed_files: 1 })] }).runGh }), /Incomplete files/);
 });
 
+test('rejects a PR snapshot changed during capture even when commit and file counts match', async () => {
+  const initial = pull(1, { commits: 1, changed_files: 1, head: { sha: 'sha1' } });
+  for (const change of [
+    { head: { sha: 'sha2' } },
+    { base: { sha: 'new-base' } },
+    { comments: 1 },
+    { updated_at: '2026-01-02T00:00:00Z' },
+    { state: 'closed', merged_at: '2026-01-02T00:00:00Z' },
+  ]) {
+    let detailReads = 0;
+    const { runGh } = fixture({
+      pulls: [initial], commits: [commit(2)], files: [patch],
+      override: url => url.pathname === '/repos/acme/widget/pulls/1' ? (detailReads++ ? { ...initial, ...change } : initial) : undefined,
+    });
+    await assert.rejects(captureProject({ cwd, runGh }), /PR #1 changed during capture.*retry/);
+  }
+});
+
 test('source authorization failures abort rather than disguising authentication as missing code', async () => {
   const { runGh } = fixture({ pulls: [pull(1, { review_comments: 1 })], inlines: [inline(1)], contents: () => { throw new Error('HTTP 403 forbidden'); } });
   await assert.rejects(captureProject({ cwd, runGh }), /HTTP 403 forbidden/);

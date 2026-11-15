@@ -273,6 +273,11 @@ export async function captureProject({ cwd = process.cwd(), runGh = defaultRunGh
         sources.push(await source(item.path, ref));
       }
     }
+    const latest = await api(endpoint);
+    const snapshotFields = ['updated_at', 'state', 'merged_at', 'comments', 'review_comments', 'commits', 'changed_files'];
+    if (latest.head?.sha !== detail.head.sha || latest.base?.sha !== detail.base.sha || snapshotFields.some(field => latest[field] !== detail[field])) {
+      throw new Error(`PR #${listed.number} changed during capture; retry to collect consistent review and code evidence.`);
+    }
     pullRequests.push({
       number: detail.number, title: detail.title, body: detail.body ?? '', url: detail.html_url,
       state: detail.state, mergedAt: detail.merged_at ?? null,

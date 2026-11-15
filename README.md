@@ -30,6 +30,7 @@ comment-to-code --help
 ## Privacy, cost, and failures
 
 Capture reads **all accessible PRs in all states**, discussion/review bodies, inline replies, commit patches, and relevant reviewed/final source through `gh`. It does not write to GitHub. All-history capture and model analysis can be slow and expensive: there is no implicit recent-history cap. Inaccessible or truncated context is recorded explicitly, not invented.
+PR metadata is rechecked after evidence collection; detected head/base, lifecycle, timestamp, or count changes abort capture rather than persisting mixed snapshots. GitHub API caps fail explicitly instead of silently dropping history.
 
 **Analyze transfers captured private repository material to the model provider selected through your installed agent CLI.** Only run it when authorized to share that material. Provider retention/billing policies apply. Prompts and private stderr are not printed by default. The local `.comment-to-code/capture.json` and `analysis.json` may contain private code and comments. The cache directory is owner-only, and a scoped root `.gitignore` entry is established and checked before private writes. Already-tracked caches, symlinks (including ancestor paths), malformed/cross-repository caches, and captures older than 30 days are refused. Recapture to refresh stale evidence. Gitignore is not encryption or access control against other processes under your account.
 

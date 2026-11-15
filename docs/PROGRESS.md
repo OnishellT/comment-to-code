@@ -32,7 +32,10 @@
 - Live nonempty capture against PR #4 succeeded: 1 PR, 2 discussion comments, 1 commit, 23 changed files, no limitations.
 - GitHub Actions test check succeeded on 61b76b34f2. CodeRabbit skipped automatic review because the repo has fewer than 10 stars; it is not counted as reviewer approval.
 - Measured review-stage memory defect: eager per-comment full-PR prompts exhausted a 48 MiB heap on 128 comments with 512 KiB context. Regression failed before fix. Minimal patch discards preflight strings and constructs only the current prompt; preflight validation remains. node --test test/analyze-memory.test.js test/analyze.test.js passed 23/23 after fix.
+- Independent review identified one P2 blocker: force-push during collection could combine old head/base metadata with equally sized new commit/file responses. Accepted as a real causal-evidence integrity defect, not speculative scope.
+- New changed-snapshot regression failed before the fix (Missing expected rejection). Capture now rechecks head/base, updated timestamp, lifecycle, and counts after evidence collection and rejects differences. No retries or partial publication. Capture plus CLI tests passed 21/21 after fix.
+- Focused independent reassessment: overall correctness correct, confidence 0.96, no unresolved reviewer blockers. Parent's focused checks are green; 5/5 merge confidence remains conditional on final CI.
 
 ## Current milestone
 
-PR #4 is open; the independent reviewer is evaluating it. Commit/push the measured memory fix, resolve justified review findings, record decisions, require green final CI, and merge only at 5/5 confidence.
+Implementation and independent review are complete. PR #4 is the authoritative final CI/merge record. Push the snapshot correction and review decisions, wait for green final CI, then merge at 5/5 confidence and fast-forward the primary main checkout. For subsequent features, restart the durable AGENTS.md loop rather than implementing directly on main.
