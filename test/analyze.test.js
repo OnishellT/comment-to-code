@@ -9,7 +9,7 @@ function capture(counts = [1, 1]) {
     capturedAt: '2026-01-01T00:00:00Z',
     pullRequests: counts.map((count, index) => {
       const number = index + 1;
-      const sha = String(number).repeat(40);
+      const sha = number.toString(16).padStart(40, '0');
       const patch = '@@ -1 +1 @@\n-return input.value;\n+return input?.value;';
       return {
         number, title: 'Handle absent input', body: '', url: `https://github.com/acme/project/pull/${number}`,
@@ -46,11 +46,13 @@ function disposition(category, status = 'ignored', outcome = 'not-applicable') {
   return { category, rootCause: null, prevention: null, resolution: null, evidence: [], confidence: 'high', status, outcome, codeEvidence: [] };
 }
 
-function groupFor(findings, incidents = findings.map(finding => [finding.commentId])) {
+function groupFor(findings, incidents = findings.map(finding => [finding.commentId]), catalog = []) {
+  const existing = catalog.findIndex(group => group.rootCause === 'Dereferencing optional input without guarding absence');
   return { groups: [{
-    rootCause: 'Dereferencing optional input without guarding absence',
-    prevention: 'Guard optional inputs before dereferencing them.',
-    incidents: incidents.map(commentIds => ({ commentIds, explanation: 'One independently observed absent-input defect.' })),
+    existingGroupIndex: existing < 0 ? null : existing,
+    rootCause: existing < 0 ? 'Dereferencing optional input without guarding absence' : null,
+    prevention: existing < 0 ? 'Guard optional inputs before dereferencing them.' : null,
+    incidents: incidents.map(commentIds => ({ existingIncidentIndex: null, commentIds, explanation: 'The optional chaining fix guards absence for this independently observed absent-input defect.' })),
   }] };
 }
 
@@ -62,7 +64,7 @@ function classifications(data, classify = confirmed) {
 }
 
 // This injectable transport is intentionally a fixture, not real model verification.
-function fixtureAgent({ classify = confirmed, classifyBatch = data => classifications(data, classify), consolidate = data => groupFor(data.findings), fence = false } = {}) {
+function fixtureAgent({ classify = confirmed, classifyBatch = data => classifications(data, classify), consolidate = data => groupFor(data.findings, undefined, data.catalog), fence = false } = {}) {
   const calls = [];
   const runAgent = async prompt => {
     const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
@@ -430,8 +432,8 @@ test('classification batches cover sorted targets once with at most sixteen and 
   }
   assert.equal(batches[1].data.pullRequests.length, 2);
   const consolidations = agent.calls.filter(call => !call.data.targets);
-  assert.equal(consolidations.length, 1);
-  assert.deepEqual(consolidations[0].data.findings.map(finding => finding.commentId), idsOf(result));
+  assert.deepEqual(consolidations.map(call => call.data.findings.length), [16, 6]);
+  assert.deepEqual(consolidations.flatMap(call => call.data.findings.map(finding => finding.commentId)), idsOf(result));
   assert.equal(result.rules[0].incidentCount, 22);
 });
 
@@ -511,7 +513,7 @@ test('batched evidence and code quotations remain local to each target PR', asyn
   }
 });
 
-test('interrupted batches resume validated findings and consolidate the complete current set once', async () => {
+test('interrupted classification resumes validated findings and consolidates the complete current set in batches', async () => {
   const input = capture([17]);
   const checkpoints = new Map();
   const savedBatches = [];
@@ -534,8 +536,7 @@ test('interrupted batches resume validated findings and consolidate the complete
     loadFinding: async inputHash => checkpoints.get(inputHash) ?? null,
   });
   assert.deepEqual(resumed.calls.filter(call => call.data.targets).map(call => call.data.targets.length), [1]);
-  assert.equal(resumed.calls.filter(call => !call.data.targets).length, 1);
-  assert.equal(resumed.calls.at(-1).data.findings.length, 17);
+  assert.deepEqual(resumed.calls.filter(call => !call.data.targets).map(call => call.data.findings.length), [16, 1]);
   assert.deepEqual(savedBatches.map(batch => batch.length), [16, 1]);
   assert.equal(result.stats.cached, 16);
   assert.equal(result.stats.analyzed, 1);
@@ -544,7 +545,7 @@ test('interrupted batches resume validated findings and consolidate the complete
   const again = await analyzeCapture(input, {
     ...complete, loadFinding: async inputHash => checkpoints.get(inputHash) ?? null,
   });
-  assert.equal(complete.calls.length, 1);
+  assert.equal(complete.calls.length, 2);
   assert.deepEqual(again.rules, result.rules);
 });
 
@@ -608,4 +609,245 @@ test('checkpoint callback failures propagate and stop later classification or co
   }), /checkpoint write failed/);
   assert.equal(failedSave.calls.length, 1);
   assert.equal(failedSave.calls[0].data.targets.length, 16);
+});
+
+test('bounded consolidation reuses a mechanism beyond sixteen findings and preserves unrelated singletons', async () => {
+  const input = capture(Array(20).fill(1));
+  const causeFor = pr => pr.number < 19 ? confirmed(pr) : {
+    ...confirmed(pr), rootCause: `Independent mechanism ${pr.number}`,
+    prevention: `Prevent independent mechanism ${pr.number}.`, resolution: `The captured fix enforces invariant ${pr.number}.`,
+  };
+  const agent = fixtureAgent({
+    classify: causeFor,
+    consolidate: data => {
+      const groups = [];
+      for (const finding of data.findings) {
+        let group = groups.find(group => group.cause === finding.rootCause);
+        if (!group) {
+          const index = data.catalog.findIndex(group => group.rootCause === finding.rootCause);
+          group = {
+            cause: finding.rootCause, existingGroupIndex: index < 0 ? null : index,
+            rootCause: index < 0 ? finding.rootCause : null, prevention: index < 0 ? finding.prevention : null, incidents: [],
+          };
+          groups.push(group);
+        }
+        group.incidents.push({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: `This independent defect was fixed: ${finding.resolution}` });
+      }
+      return { groups: groups.map(({ cause, ...group }) => group) };
+    },
+  });
+  const result = await analyzeCapture(input, agent);
+  const calls = agent.calls.filter(call => !call.data.targets);
+  assert.deepEqual(calls.map(call => call.data.findings.length), [16, 4]);
+  assert.equal(result.rules.length, 1);
+  assert.equal(result.rules[0].incidentCount, 18);
+  assert.equal(result.rules[0].commentIds.length, 18);
+  assert.deepEqual(result.candidates.map(group => group.incidents[0].commentIds[0]).sort(), ['inline:19:1', 'inline:20:1']);
+  const catalogMembers = calls[1].data.catalog[0].incidents.flatMap(incident => incident.findings).sort((a, b) => a.prNumber - b.prNumber);
+  assert.deepEqual(catalogMembers, result.findings.slice(0, 16).map(({ commentId, prNumber, resolution, evidence }) => ({ commentId, prNumber, resolution, evidence })));
+  assert.deepEqual(Object.keys(calls[1].data.threads), idsOf(result));
+  assert.deepEqual(calls[1].data.findings, result.findings.slice(16));
+});
+
+test('cross-batch thread echoes and explicit same-defect joins count once while new defects recur', async () => {
+  const input = capture([19]);
+  const sorted = [...input.pullRequests[0].comments].sort((a, b) => a.id.localeCompare(b.id));
+  sorted.slice(0, 17).forEach(comment => { comment.threadId = 'original-defect'; });
+  const agent = fixtureAgent({ consolidate: data => {
+    const result = groupFor(data.findings, undefined, data.catalog);
+    if (data.catalog.length) result.groups[0].incidents[1].existingIncidentIndex = 0;
+    return result;
+  } });
+  const states = [];
+  const result = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { states.push(state); } });
+  assert.deepEqual(states.map(state => state.processed.length), [16, 19]);
+  assert.equal(states[0].groups[0].incidents.length, 1);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.groups[0].incidents.map(incident => incident.commentIds.length).sort((a, b) => a - b), [1, 18]);
+  assert.ok(result.groups[0].incidents.find(incident => incident.commentIds.length === 18).commentIds.includes(sorted[17].id));
+  const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => states.at(-1) });
+  assert.deepEqual(resumed.groups, result.groups);
+});
+
+test('invalid snapshot references and a bad last addition cannot mutate or checkpoint a valid prefix', async () => {
+  const input = capture([20]);
+  const states = [];
+  const complete = await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async state => { states.push(state); } });
+  const prefix = states[0];
+  const original = structuredClone(prefix);
+  for (const mutate of [
+    result => { result.groups[0].existingGroupIndex = 1; },
+    result => { result.groups[0].existingGroupIndex = -1; },
+    result => { result.groups[0].existingGroupIndex = 0.5; },
+    result => { result.groups[0].existingGroupIndex = '0'; },
+    result => { result.groups[0].rootCause = 'Rewritten invariant'; },
+    result => { result.groups[0].incidents.at(-1).existingIncidentIndex = 999; },
+    result => { result.groups[0].incidents.at(-1).existingIncidentIndex = false; },
+    result => { result.groups[0].incidents.at(-1).commentIds = [prefix.processed[0]]; },
+    result => { result.groups[0].incidents.at(-1).explanation = ''; },
+    result => { result.groups.push(structuredClone(result.groups[0])); },
+    result => { result.groups[0].incidents.at(-1).commentIds = ['unknown']; },
+    result => { result.groups[0].existingGroupIndex = null; result.groups[0].rootCause = original.groups[0].rootCause; result.groups[0].prevention = original.groups[0].prevention; },
+    result => { result.groups[0].existingGroupIndex = null; result.groups[0].rootCause = 'New cause'; result.groups[0].prevention = 'New prevention.'; result.groups[0].incidents[0].existingIncidentIndex = 0; },
+  ]) {
+    let saves = 0;
+    const agent = fixtureAgent({ consolidate: data => {
+      const result = groupFor(data.findings, undefined, data.catalog);
+      mutate(result);
+      return result;
+    } });
+    await assert.rejects(analyzeCapture(input, {
+      ...agent, previous: complete, loadConsolidation: async () => prefix,
+      saveConsolidation: async () => { saves++; },
+    }), /Invalid analysis/);
+    assert.equal(saves, 0);
+    assert.equal(agent.calls.length, 1);
+    assert.deepEqual(prefix, original);
+  }
+});
+
+test('snapshot references stay valid when new groups precede existing groups and thread collapse renumbers incidents', async () => {
+  const input = capture([34]);
+  const sorted = [...input.pullRequests[0].comments].sort((a, b) => a.id.localeCompare(b.id));
+  sorted.slice(0, 17).forEach(comment => { comment.threadId = 'shared'; });
+  let calls = 0;
+  const agent = fixtureAgent({ consolidate: data => {
+    calls++;
+    if (calls === 1) return groupFor(data.findings);
+    const index = data.catalog.findIndex(group => group.rootCause === confirmed(input.pullRequests[0]).rootCause);
+    const result = groupFor(data.findings, undefined, data.catalog);
+    if (calls === 2) {
+      const singleton = result.groups[0].incidents.pop();
+      result.groups.unshift({ existingGroupIndex: null, rootCause: 'A distinct invariant', prevention: 'Enforce the distinct invariant.', incidents: [singleton] });
+    } else {
+      assert.ok(index >= 0);
+      const incident = data.catalog[index].incidents.findIndex(incident => incident.commentIds.includes(sorted[0].id));
+      assert.ok(incident >= 0);
+      result.groups[0].incidents[0].existingIncidentIndex = incident;
+    }
+    return result;
+  } });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(calls, 3);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].incidents[0].commentIds[0], sorted[31].id);
+  const joined = result.groups.find(group => group.rootCause === confirmed(input.pullRequests[0]).rootCause).incidents.find(incident => incident.commentIds.includes(sorted[0].id));
+  assert.ok(joined.commentIds.includes(sorted[32].id));
+  assert.equal(joined.commentIds.length, 18);
+});
+
+test('matching complete checkpoints avoid every model call while valid stale policy and inputs regroup only', async () => {
+  const input = capture();
+  let checkpoint;
+  const first = await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async state => { checkpoint = state; } });
+  const resumed = await analyzeCapture(input, {
+    previous: first, loadConsolidation: async () => checkpoint,
+    runAgent: async () => { throw new Error('must not call model'); },
+  });
+  assert.deepEqual(resumed.groups, first.groups);
+  assert.deepEqual(resumed.rules, first.rules);
+  for (const field of ['policyHash', 'inputHash']) {
+    const stale = { ...checkpoint, [field]: checkpoint[field] === 'a'.repeat(64) ? 'b'.repeat(64) : 'a'.repeat(64) };
+    const agent = fixtureAgent();
+    const result = await analyzeCapture(input, { ...agent, previous: first, loadConsolidation: async () => stale });
+    assert.equal(agent.calls.length, 1);
+    assert.equal(agent.calls[0].data.catalog.length, 0);
+    assert.equal(result.stats.cached, 2);
+    assert.deepEqual(result.rules, first.rules);
+  }
+  const removed = structuredClone(input);
+  removed.pullRequests.pop();
+  const result = await analyzeCapture(removed, { ...fixtureAgent(), previous: first, loadConsolidation: async () => checkpoint });
+  assert.equal(result.rules.length, 0);
+  assert.deepEqual(result.candidates[0].incidents[0].commentIds, ['inline:1:1']);
+});
+
+test('loaded consolidation rejects malformed state, cross-repository identity, and inconsistent processed coverage', async () => {
+  const input = capture();
+  let checkpoint;
+  const first = await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async state => { checkpoint = state; } });
+  for (const mutate of [
+    state => { state.version = 0; },
+    state => { state.repository.owner = 'other'; },
+    state => { state.repository.extra = true; },
+    state => { state.policyHash = 'not-a-hash'; },
+    state => { state.inputHash = null; },
+    state => { state.processed.reverse(); },
+    state => { state.processed.push(state.processed[0]); },
+    state => { state.processed.pop(); },
+    state => { state.groups[0].incidents.pop(); },
+    state => { state.groups[0].incidents[0].commentIds = ['unknown']; },
+    state => { state.groups[0].incidents[0].explanation = ''; },
+    state => { state.groups[0].rootCause += ' '; },
+    state => { state.groups[0].incidents[0].id = 'not-a-raw-group'; },
+    state => { state.extra = true; },
+    state => { state.policyHash = 'a'.repeat(64); state.groups[0].incidents.pop(); },
+  ]) {
+    const state = structuredClone(checkpoint);
+    mutate(state);
+    const agent = fixtureAgent();
+    await assert.rejects(analyzeCapture(input, { ...agent, previous: first, loadConsolidation: async () => state }), /Invalid analysis/);
+    assert.equal(agent.calls.length, 0);
+  }
+});
+
+test('complete catalog budgets pack smaller batches or fail before a call without losing saved progress', async () => {
+  const input = capture([20]);
+  input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'one-defect'; });
+  const initial = fixtureAgent();
+  const previous = await analyzeCapture(input, initial);
+  const firstPrompt = initial.calls.find(call => !call.data.targets).prompt;
+  const maxInputBytes = Buffer.byteLength(firstPrompt) - 1;
+  const smaller = fixtureAgent();
+  const result = await analyzeCapture(input, { ...smaller, previous, maxInputBytes });
+  assert.ok(smaller.calls[0].data.findings.length < 16);
+  assert.deepEqual(result.groups, previous.groups);
+  for (const call of smaller.calls) assert.ok(Buffer.byteLength(call.prompt) <= maxInputBytes);
+  const states = [];
+  const oversizedCatalog = fixtureAgent({ consolidate: data => {
+    const result = groupFor(data.findings, undefined, data.catalog);
+    result.groups[0].incidents[0].explanation = 'A full source-grounded explanation. '.repeat(2000);
+    return result;
+  } });
+  await assert.rejects(analyzeCapture(input, {
+    ...oversizedCatalog, previous, maxInputBytes: Buffer.byteLength(firstPrompt) + 1000,
+    saveConsolidation: async state => { states.push(state); },
+  }), /budget exceeded.*not truncated/);
+  assert.equal(oversizedCatalog.calls.length, 1);
+  assert.equal(states.length, 1);
+  assert.equal(states[0].processed.length, 16);
+});
+
+test('consolidation checkpoint callback failures propagate before later calls', async () => {
+  const input = capture([20]);
+  const previous = await analyzeCapture(input, fixtureAgent());
+  const load = fixtureAgent();
+  await assert.rejects(analyzeCapture(input, {
+    ...load, previous, loadConsolidation: async () => { throw new Error('state read failed'); },
+  }), /state read failed/);
+  assert.equal(load.calls.length, 0);
+  const save = fixtureAgent();
+  await assert.rejects(analyzeCapture(input, {
+    ...save, previous, saveConsolidation: async () => { throw new Error('state write failed'); },
+  }), /state write failed/);
+  assert.equal(save.calls.length, 1);
+});
+
+test('matching state must already collapse captured threads, and partial fenced prose is never salvaged', async () => {
+  const input = capture([2]);
+  let separate;
+  await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async state => { separate = state.groups; } });
+  input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'one-defect'; });
+  let state;
+  const previous = await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async checkpoint => { state = checkpoint; } });
+  await assert.rejects(analyzeCapture(input, {
+    previous, loadConsolidation: async () => ({ ...state, groups: separate }),
+    runAgent: async () => { throw new Error('must not call model'); },
+  }), /uncollapsed thread/);
+  let saves = 0;
+  const partial = fixtureAgent({ consolidate: data => `\`\`\`json\n${JSON.stringify(groupFor(data.findings))}\n\`\`\`\nShould I generate the remaining groups separately?` });
+  await assert.rejects(analyzeCapture(input, {
+    ...partial, previous, saveConsolidation: async () => { saves++; },
+  }), /not a single JSON object/);
+  assert.equal(saves, 0);
 });
