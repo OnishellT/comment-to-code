@@ -14,21 +14,24 @@ const repository = { owner: 'example', name: 'review-fixture', host: 'github.com
 const reviewedAt = '2026-01-02T10:00:00Z';
 const fixedAt = '2026-01-03T10:00:00Z';
 function pullRequest(number, path, field, missing) {
-  const baseSha = String(number).repeat(40);
-  const headSha = String(number + 2).repeat(40);
+  const baseSha = (number * 3).toString(16).padStart(40, '0');
+  const fixSha = (number * 3 + 1).toString(16).padStart(40, '0');
+  const headSha = (number * 3 + 2).toString(16).padStart(40, '0');
   const url = `${repository.url}/pull/${number}`;
   const before = `export function labels(input) { return input.${field}.map(x => x.name); }\n`;
   const after = `export function labels(input) { return (input.${field} ?? []).map(x => x.name); }\n`;
   const file = { path, previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${before.trim()}\n+${after.trim()}` };
+  const unrelatedFile = { path: 'README.md', previousPath: null, status: 'added', patch: '@@ -0,0 +1 @@\n+# Review fixture' };
   return {
     number, title: `Normalize optional ${field} at the input boundary`, body: 'External API collection fields may be null or omitted. They represent empty collections, not errors.',
     url, state: 'closed', mergedAt: fixedAt, baseSha, headSha,
     comments: [{ id: `inline:${number}`, kind: 'inline', body: `When input.${field} is ${missing}, this throws before returning labels. Treat absent optional external collections as empty before iterating.`, url: `${url}#discussion_r${number}`, author: 'reviewer', createdAt: reviewedAt, updatedAt: reviewedAt, threadId: `inline:${number}`, path, line: 1, originalCommitId: baseSha, diffHunk: `@@ -0,0 +1 @@\n+${before.trim()}` }],
     commits: [
       { sha: baseSha, message: 'Initial collection mapping', authoredAt: '2026-01-01T10:00:00Z', files: [{ ...file, status: 'added', patch: `@@ -0,0 +1 @@\n+${before.trim()}` }], limitations: [] },
-      { sha: headSha, message: 'Fix review: normalize optional collection before mapping', authoredAt: fixedAt, files: [file], limitations: [] }
+      { sha: fixSha, message: 'Fix review: normalize optional collection before mapping', authoredAt: fixedAt, files: [file], limitations: [] },
+      { sha: headSha, message: 'Document the fixture', authoredAt: fixedAt, files: [unrelatedFile], limitations: [] }
     ],
-    files: [file], sources: [{ path, ref: baseSha, content: before, unavailableReason: null }, { path, ref: headSha, content: after, unavailableReason: null }], limitations: []
+    files: [file, unrelatedFile], sources: [{ path, ref: baseSha, content: before, unavailableReason: null }, { path, ref: headSha, content: after, unavailableReason: null }], limitations: []
   };
 }
 const capture = { version: 1, repository, capturedAt: fixedAt, pullRequests: [pullRequest(1, 'src/products.js', 'products', 'null'), pullRequest(2, 'src/tags.js', 'tags', 'undefined')] };
