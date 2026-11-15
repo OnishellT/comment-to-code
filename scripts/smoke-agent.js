@@ -86,11 +86,25 @@ simulation.comments.push({
   body: 'A rejected placement leaves its queued fault behind for the next unrelated order. Clear the request fault queue on every exit, including rejection.',
 });
 capture.pullRequests.push(simulation);
+capture.pullRequests.push(pullRequest(9, {
+  path: 'src/session-refresh.js', title: 'Prevent stale refresh from replacing a newer session',
+  body: 'Concurrent refreshes share a durable session row. A response may commit only if the generation it read is still current. The compare-and-swap operation atomically checks the generation, writes the value and advances the generation on success.',
+  before: 'export async function refresh(store, id, token) { const session = await store.readSession(id); const next = await exchange(token); if ((await store.readSession(id)).generation === session.generation) await store.writeSession(id, next); }\n',
+  after: 'export async function refresh(store, id, token) { const session = await store.readSession(id); const next = await exchange(token); return store.compareAndSwapSession(id, session.generation, next); }\n',
+  comment: 'The generation check and write are separate operations: another refresh can commit between them, then this stale response overwrites it. Compare the expected generation and update the session atomically.',
+}));
+capture.pullRequests.push(pullRequest(31, {
+  path: 'src/render-cache.js', title: 'Reject stale background render results',
+  body: 'Invalidation advances a durable cache generation. An in-flight render must not replace a newer cache value. The compare-and-swap operation atomically checks the generation, writes the value and advances the generation on success.',
+  before: 'export async function render(cache, key) { const entry = await cache.read(key); const html = await buildPage(key); if ((await cache.read(key)).generation === entry.generation) await cache.write(key, html); }\n',
+  after: 'export async function render(cache, key) { const entry = await cache.read(key); const html = await buildPage(key); return cache.compareAndSwap(key, entry.generation, html); }\n',
+  comment: 'Invalidation or another render can commit after the generation read but before cache.write, letting stale HTML overwrite newer content. Atomically compare the expected generation and write.',
+}));
 for (let number = 20; number <= 30; number++) {
   const pr = optionalCollection(number, `src/collection-${number}.js`, `collection${number}`, number % 2 ? 'null' : 'undefined');
-  if (number === 27) pr.comments.push({
-    ...pr.comments[0], id: 'inline:2700', url: `${pr.url}#discussion_r2700`,
-    body: 'Reproduced against the reviewed version: labels({ collection27: null }) throws TypeError at map. This is the same defect reported above in this thread, not a separate occurrence. Normalize the optional field before mapping.',
+  if (number === 26) pr.comments.push({
+    ...pr.comments[0], id: 'inline:2600', url: `${pr.url}#discussion_r2600`,
+    body: 'Reproduced against the reviewed version: labels({ collection26: null }) throws TypeError at map. This is the same defect reported above in this thread, not a separate occurrence. Normalize the optional field before mapping.',
   });
   capture.pullRequests.push(pr);
 }
@@ -117,23 +131,23 @@ try {
       return response;
     },
   });
-  assert.equal(analysis.findings.length, 21, 'every review comment must be classified');
+  assert.equal(analysis.findings.length, 23, 'every review comment must be classified');
   assert.equal(unrelatedHeadPullRequests.size, capture.pullRequests.length, 'every native classification must receive the unrelated-head history');
-  assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 20, 'all twenty observed fixes must remain eligible');
+  assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 22, 'all twenty-two observed fixes must remain eligible');
   assert.ok(consolidations.length >= 2, 'native consolidation must cross the sixteen-finding boundary');
-  assert.equal(consolidations[0].findings.at(-1).commentId, 'inline:27');
-  assert.equal(consolidations[1].findings[0].commentId, 'inline:2700');
+  assert.equal(consolidations[0].findings.at(-1).commentId, 'inline:26');
+  assert.equal(consolidations[1].findings[0].commentId, 'inline:2600');
   assert.ok(consolidations[1].catalog.length, 'later batches must reuse the complete causal catalog');
-  assert.equal(analysis.rules.length, 2, 'only optional-collection and index-access mechanisms recur');
+  assert.equal(analysis.rules.length, 3, 'only optional-collection, index-access and atomic generation-check-and-write mechanisms recur');
   const membership = groups => groups.map(group => group.incidents.flatMap(incident => incident.commentIds).sort()).sort((a, b) => a[0].localeCompare(b[0]));
   const promoted = analysis.groups.filter(group => analysis.rules.some(rule => rule.id === group.id));
-  const optionalIds = ['inline:1', 'inline:2', ...Array.from({ length: 11 }, (_, index) => `inline:${index + 20}`), 'inline:2700'].sort();
-  assert.deepEqual(membership(promoted), [optionalIds, ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
+  const optionalIds = ['inline:1', 'inline:2', ...Array.from({ length: 11 }, (_, index) => `inline:${index + 20}`), 'inline:2600'].sort();
+  assert.deepEqual(membership(promoted), [optionalIds, ['inline:31', 'inline:9'], ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
   for (const rule of analysis.rules) {
     const optional = rule.commentIds.includes('inline:1');
     assert.equal(rule.incidentCount, optional ? 13 : 2, 'only independent defects count toward recurrence');
     const group = promoted.find(group => group.id === rule.id);
-    const expected = rule.commentIds.filter(id => id !== 'inline:2700').map(id => id === 'inline:27' ? [id, 'inline:2700'] : [id]);
+    const expected = rule.commentIds.filter(id => id !== 'inline:2600').map(id => id === 'inline:26' ? [id, 'inline:2600'] : [id]);
     assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), expected, 'the cross-batch reply must join its original defect, not inflate recurrence');
   }
   assert.equal(analysis.candidates.length, 4, 'unrelated database and same-file simulator defects must remain candidates');

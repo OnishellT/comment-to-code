@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeCapture } from '../src/analyze.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { publishRules } from '../src/publish.js';
 
 function capture(counts = [1, 1]) {
   return {
@@ -669,6 +673,45 @@ test('cross-batch thread echoes and explicit same-defect joins count once while 
   assert.deepEqual(resumed.groups, result.groups);
 });
 
+test('paired refinement preserves old members and publishes the shared invariant after independent recurrence', async () => {
+  const input = capture([16, 1]);
+  input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'one-original-defect'; });
+  const rootCause = 'Dereferencing optional input without guarding absence';
+  const prevention = 'Guard optional inputs before dereferencing them.';
+  const states = [];
+  const agent = fixtureAgent({ consolidate: data => ({
+    groups: [{
+      existingGroupIndex: data.catalog.length ? 0 : null,
+      rootCause: data.catalog.length ? rootCause : 'Dereferencing optional request input without guarding absence',
+      prevention: data.catalog.length ? prevention : 'Guard optional request inputs before dereferencing them.',
+      incidents: [{
+        existingIncidentIndex: null, commentIds: data.findings.map(finding => finding.commentId),
+        explanation: 'Optional chaining guards the absent input in this independently fixed defect.',
+      }],
+    }],
+  }) });
+  const result = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { states.push(state); } });
+  assert.equal(states[0].groups[0].incidents.length, 1);
+  assert.equal(result.rules.length, 1);
+  assert.equal(result.rules[0].incidentCount, 2);
+  const oldIncident = result.groups[0].incidents.find(incident => incident.commentIds.includes('inline:1:1'));
+  assert.deepEqual({ commentIds: oldIncident.commentIds, explanation: oldIncident.explanation }, states[0].groups[0].incidents[0]);
+  assert.deepEqual(result.rules[0].commentIds, idsOf(result).sort());
+  assert.equal(result.groups[0].rootCause, rootCause);
+  assert.equal(result.groups[0].prevention, prevention);
+  const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-refinement-'));
+  try {
+    await publishRules(cwd, result);
+    const published = await readFile(join(cwd, 'rules.md'), 'utf8');
+    assert.ok(published.includes(prevention));
+    assert.ok(!published.includes('Guard optional request inputs'));
+    const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => states.at(-1) });
+    assert.deepEqual(resumed.groups, result.groups);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test('invalid snapshot references and a bad last addition cannot mutate or checkpoint a valid prefix', async () => {
   const input = capture([20]);
   const states = [];
@@ -680,7 +723,12 @@ test('invalid snapshot references and a bad last addition cannot mutate or check
     result => { result.groups[0].existingGroupIndex = -1; },
     result => { result.groups[0].existingGroupIndex = 0.5; },
     result => { result.groups[0].existingGroupIndex = '0'; },
-    result => { result.groups[0].rootCause = 'Rewritten invariant'; },
+    result => { result.groups[0].rootCause = 'Refined cause'; },
+    result => { result.groups[0].prevention = 'Refined prevention.'; },
+    result => { result.groups[0].rootCause = ''; result.groups[0].prevention = 'Refined prevention.'; },
+    result => { result.groups[0].rootCause = 'Refined cause'; result.groups[0].prevention = ' \n '; },
+    result => { result.groups[0].rootCause = '<!-- comment-to-code:begin -->'; result.groups[0].prevention = 'Refined prevention.'; },
+    result => { result.groups[0].rootCause = 'Refined cause'; result.groups[0].prevention = '<!-- comment-to-code:end -->'; },
     result => { result.groups[0].incidents.at(-1).existingIncidentIndex = 999; },
     result => { result.groups[0].incidents.at(-1).existingIncidentIndex = false; },
     result => { result.groups[0].incidents.at(-1).commentIds = [prefix.processed[0]]; },
@@ -704,6 +752,8 @@ test('invalid snapshot references and a bad last addition cannot mutate or check
     assert.equal(agent.calls.length, 1);
     assert.deepEqual(prefix, original);
   }
+  const resumed = await analyzeCapture(input, { ...fixtureAgent(), previous: complete, loadConsolidation: async () => prefix });
+  assert.deepEqual(resumed.groups, complete.groups);
 });
 
 test('snapshot references stay valid when new groups precede existing groups and thread collapse renumbers incidents', async () => {
