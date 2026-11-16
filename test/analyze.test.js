@@ -1834,18 +1834,24 @@ test('a bare diff marker is not a prefix citation but is valid for a genuinely e
   assert.equal(findingsFor(valid)[0].status, 'confirmed');
 });
 
-test('completed catalog projects literal per-claim proof while active comments retain linked inline context', async () => {
+test('completed catalog projects literal per-claim proof while active PRs retain all commentary without adding findings', async () => {
   const input = multiCauseCapture([16, 1]);
   const old = input.pullRequests[0];
   old.comments.forEach(comment => { comment.body = `Aggregate wrapper ${'context '.repeat(1000)}${comment.body} Accepted alternative: retain the default.`; });
   const active = input.pullRequests[1];
   const member = active.comments[0];
-  const linked = { ...member, id: 'inline:2:linked', threadId: 'different-linked-thread', url: `${active.url}#discussion_linked`, body: 'This is supporting inline context, not a separate reported cause.' };
-  const unrelated = { ...member, id: 'inline:2:unrelated', threadId: 'different-unrelated-thread', url: `${active.url}#discussion_unrelated`, body: 'Unrelated contextual acknowledgement.' };
+  const rejected = { ...member, id: 'inline:2:rejected', threadId: 'different-rejected-thread', url: `${active.url}#discussion_rejected`, body: 'REJECTED-ALTERNATIVE: do not add runtime schema gates; retain the accepted lightweight guard.' };
+  const linked = { ...member, id: 'inline:2:linked', threadId: 'different-linked-thread', url: `${active.url}#discussion_linked`, body: `CONTEXT-ONLY: supporting inline detail at #discussion_rejected, not a separate reported cause.` };
+  const unrelated = { ...member, id: 'inline:2:unrelated', threadId: 'different-unrelated-thread', url: `${active.url}#discussion_unrelated`, body: 'CONTEXT-ONLY: unrelated contextual acknowledgement.' };
   member.body += ` Same-state inline detail: ${linked.url}`;
-  active.comments.push(linked, unrelated);
+  active.comments.push(linked, rejected, unrelated);
+  const contextIds = new Set([linked.id, rejected.id, unrelated.id]);
   const agent = fixtureAgent({
-    classify: (pr, target) => ['inline:2:linked', 'inline:2:unrelated'].includes(target.commentId) ? disposition('administrative') : multiCauseClaims(pr),
+    classify: (pr, target) => target.commentId === rejected.id ? {
+      ...disposition('suggestion', 'ignored', 'rejected'),
+      rootCause: 'Proposing runtime schema gates where the accepted guard suffices',
+      prevention: 'Retain the accepted lightweight guard.', resolution: 'Runtime schema gates were explicitly rejected.',
+    } : contextIds.has(target.commentId) ? disposition('administrative') : multiCauseClaims(pr),
     consolidate: separateCauses,
   });
   const result = await analyzeCapture(input, agent);
@@ -1869,11 +1875,19 @@ test('completed catalog projects literal per-claim proof while active comments r
     assert.equal(projected.outcome, 'verified-fix');
   }
   assert.equal(context.pullRequests.find(pr => pr.number === 2).codeContext, 'complete-captured-pr');
-  assert.equal(context.comments.find(comment => comment.commentId === member.id).body, member.body);
-  assert.equal(context.comments.find(comment => comment.commentId === linked.id).body, linked.body);
-  assert.equal(context.comments.find(comment => comment.commentId === linked.id).member, false);
-  assert.equal(context.comments.some(comment => comment.commentId === unrelated.id), false);
-  assert.deepEqual(result.comments.find(comment => comment.commentId === linked.id).claims.map(claim => claim.status), ['ignored']);
+  assert.deepEqual(context.comments.map(comment => comment.commentId).sort(), active.comments.map(comment => comment.id).sort());
+  for (const original of active.comments) {
+    const supplied = context.comments.find(comment => comment.commentId === original.id);
+    assert.equal(supplied.body, original.body);
+    assert.equal(supplied.member, original.id === member.id);
+    assert.equal(supplied.commentaryContext, 'complete-captured-comment');
+    if (contextIds.has(original.id)) {
+      assert.ok(findingsFor(result).filter(finding => finding.commentId === original.id).every(finding => finding.status === 'ignored'));
+      assert.ok(!context.findings.some(finding => finding.commentId === original.id));
+      assert.ok(!context.catalog.some(group => group.incidents.some(incident => incident.findings.some(finding => finding.commentId === original.id))));
+    }
+  }
+  assert.equal(findingsFor(result).find(finding => finding.commentId === rejected.id).outcome, 'rejected');
   assert.equal(result.rules.length, 2);
 });
 
