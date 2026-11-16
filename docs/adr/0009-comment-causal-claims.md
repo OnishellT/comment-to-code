@@ -1,0 +1,15 @@
+# ADR 0009: Comment checkpoints with independent causal claims
+
+## Decision (issue 31)
+
+Replace v6 single-comment findings with causal-claims-v7 classification and version 2 analysis/consolidation. Persist one `comments` envelope per captured comment: `{version:2,commentId,prNumber,inputHash,claims}`. Claims are nonempty and contain app-assigned `id`, literal `excerpt` (null only for empty nontechnical accounting), category, rootCause, prevention, resolution, evidence, confidence, status, outcome and codeEvidence. The model returns `{comments:[{commentId,claims:[...]}]}` without claim IDs. Derive flattened findings through `findingsFor(analysis)`; never persist a second flat truth. Checkpoint callbacks are `loadComment`/`saveComments`, under `comments/<inputHash>.json`.
+
+Claim IDs hash full parent identity and validated canonical claim content. Sort unordered evidence/citations, retain exact literal bytes, reject duplicate claims/citations and recompute IDs on load. Validate the whole batch's schemas, ownership, excerpts and dispositions before any code-citation-only replacement or save. One complete replacement must preserve each technical claim's literal excerpt/category/cause/prevention identity, allowing its fix disposition to remain uncertain. Require an entire literal changed line, not a prefix.
+
+Groups, incidents, exact partitions and processed prefixes use `claimIds`; published rules use deduplicated original comment IDs and captured references. In each group, merge incidents transitively when they share an original comment. This is identity coalescing only: no PR/thread/anchor/time/stage inference. Revalidate canonical grouping during resume and complete-analysis publication so facets cannot manufacture recurrence. Preserve paired invariant refinement and evidenced failed-repair semantics.
+
+Completed catalog members retain their own excerpt, causal proof, outcomes, citations and original provenance, not full aggregate bodies. Current PRs keep complete available artifacts and member/same-thread/noninline commentary, plus explicitly linked inline commentary already captured. Label deliberate claim projections separately from unavailable capture. No retrieval, text limits, new dependencies, runtime gates or budget/default changes.
+
+## Verification
+
+Update all real consumers, controlled fixtures and README/PLAN/PROGRESS. Consumer regressions cover multi-cause outcomes, atomic malformed batches, literal citations, stable identities, old-cache rejection, same-comment facets across sixteen-claim boundaries/resume/publication and projected versus active context. Run the full `npm test` after implementation, preserving first failures, and syntax-check the extended native fixture. Native/provider and full-history semantic acceptance remain parent-owned; controlled transports are not native proof. Existing private citation-prefix failure is accepted red evidence, not rerun before implementation. No customer caches or outputs are migrated or edited.

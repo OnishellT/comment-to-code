@@ -31,13 +31,13 @@ async function analysis(count = 2) {
   };
   return analyzeCapture(input, { runAgent: async prompt => {
     const data = JSON.parse(prompt.slice(prompt.indexOf('\nDATA ') + 6));
-    if (data.targets) return JSON.stringify({ findings: data.targets.map(target => ({
-      commentId: target.commentId,
+    if (data.targets) return JSON.stringify({ comments: data.targets.map(target => ({
+      commentId: target.commentId, claims: [{ excerpt: 'Guard absent value',
       category: 'defect', rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.',
       resolution: 'Added an explicit guard.', evidence: ['b'.repeat(40), data.pullRequests[0].comments.find(comment => comment.id === target.commentId).url],
       confidence: 'high', status: 'confirmed', outcome: 'verified-fix', codeEvidence: [{ ref: 'b'.repeat(40), path: 'input.js', quote: '+if (value) read(value);' }],
-    })) });
-    return JSON.stringify({ groups: [{ existingGroupIndex: null, rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'An explicit absence guard fixes this distinct defect.' })) }] });
+    }] })) });
+    return JSON.stringify({ groups: [{ existingGroupIndex: null, rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ existingIncidentIndex: null, claimIds: [finding.id], explanation: 'An explicit absence guard fixes this distinct defect.' })) }] });
   } });
 }
 
@@ -158,15 +158,15 @@ test('incomplete or tampered analysis cannot overwrite previously published rule
   await publishRules(cwd, complete);
   const before = await contents(cwd);
   const mutations = [
-    value => { value.findings.pop(); },
+    value => { value.comments.pop(); },
     value => { value.groups = []; },
     value => { value.rules = []; },
     value => { value.candidates = value.groups; },
     value => { value.stats.comments++; },
     value => { value.stats.analyzed--; },
     value => { value.rules[0].incidentCount = 1; },
-    value => { value.groups[0].incidents[1].commentIds = [...value.groups[0].incidents[0].commentIds]; },
-    value => { value.findings[0].status = 'unresolved'; },
+    value => { value.groups[0].incidents[1].claimIds = [...value.groups[0].incidents[0].claimIds]; },
+    value => { value.comments[0].claims[0].status = 'unresolved'; },
   ];
   for (const mutate of mutations) {
     const broken = structuredClone(complete);
@@ -181,10 +181,10 @@ test('incomplete or tampered analysis cannot overwrite previously published rule
 test('marker injection in model-derived text or evidence fails before publication', async t => {
   const complete = await analysis();
   for (const mutate of [
-    value => { value.findings[0].prevention = START; },
-    value => { value.findings[0].rootCause = END; },
-    value => { value.findings[0].resolution = START; },
-    value => { value.findings[0].evidence.push(END); },
+    value => { value.comments[0].claims[0].prevention = START; },
+    value => { value.comments[0].claims[0].rootCause = END; },
+    value => { value.comments[0].claims[0].resolution = START; },
+    value => { value.comments[0].claims[0].evidence.push(END); },
     value => { value.groups[0].prevention = START; },
     value => { value.groups[0].incidents[0].explanation = END; },
     value => { value.rules[0].instruction = START; },

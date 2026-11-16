@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from '../src/cli.js';
+import { analyzeCapture, findingsFor } from '../src/analyze.js';
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/comment-to-code.js', import.meta.url));
@@ -66,14 +67,14 @@ function fixtureAgent({ beforeBatch, consolidate } = {}) {
       if (data.targets) {
         batches.push(data.targets);
         await beforeBatch?.(data, batches.length);
-        return JSON.stringify({ findings: data.targets.map(({ prNumber, commentId }) => {
+        return JSON.stringify({ comments: data.targets.map(({ prNumber, commentId }) => {
           const pr = data.pullRequests.find(pr => pr.number === prNumber);
           return {
-            commentId, category: 'defect', rootCause: 'Dereferencing optional input without an absence guard',
+            commentId, claims: [{ excerpt: pr.comments.find(comment => comment.id === commentId).body, category: 'defect', rootCause: 'Dereferencing optional input without an absence guard',
             prevention: 'Guard optional inputs before dereferencing them.', resolution: 'Optional chaining guards absent input.',
             evidence: [pr.commits[0].sha], confidence: 'high', status: 'confirmed', outcome: 'verified-fix',
             codeEvidence: [{ ref: pr.commits[0].sha, path: 'input.js', quote: '+return input?.value;' }],
-          };
+          }] };
         }) });
       }
       consolidations.push(data);
@@ -83,7 +84,7 @@ function fixtureAgent({ beforeBatch, consolidate } = {}) {
         const existing = data.catalog[0]?.incidents.findIndex(incident => incident.findings.some(finding => finding.prNumber === prNumber)) ?? -1;
         return {
           existingIncidentIndex: existing < 0 ? null : existing,
-          commentIds: data.findings.filter(finding => finding.prNumber === prNumber).map(finding => finding.commentId),
+          claimIds: data.findings.filter(finding => finding.prNumber === prNumber).map(finding => finding.id),
           explanation: 'Optional chaining guards absence for this observed absent-input defect.',
         };
       });
@@ -103,7 +104,7 @@ async function publishedArtifacts(root) {
 }
 
 async function checkpointEntries(root) {
-  const directory = join(root, '.comment-to-code/findings');
+  const directory = join(root, '.comment-to-code/comments');
   return Promise.all((await readdir(directory)).sort().map(async name => ({
     name, path: join(directory, name), finding: JSON.parse(await readFile(join(directory, name), 'utf8')),
   })));
@@ -165,7 +166,8 @@ test('explicit agent timeout aborts safely and a sufficient bound completes anal
     pullRequests: history.pullRequests,
     targets: history.pullRequests.flatMap(pr => pr.comments.map(comment => ({ prNumber: pr.number, commentId: comment.id }))),
   })}`);
-  const consolidation = await agent.runAgent('codex', `\nDATA ${JSON.stringify({ findings: JSON.parse(classification).findings, catalog: [] })}`);
+  const normalized = await analyzeCapture(history, { runAgent: prompt => agent.runAgent('codex', prompt) });
+  const consolidation = await agent.runAgent('codex', `\nDATA ${JSON.stringify({ findings: findingsFor(normalized), catalog: [] })}`);
   const responses = join(tools, 'responses.json');
   await writeFile(responses, JSON.stringify({ classification, consolidation }));
   const executable = join(tools, 'codex');
@@ -183,10 +185,10 @@ setTimeout(() => {
   await chmod(executable, 0o755);
   await assert.rejects(cli('analyze', '--agent', 'codex', '--agent-timeout-ms', '100'), /timed out/);
   assert.deepEqual(await publishedArtifacts(root), previous);
-  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(root, '.comment-to-code/comments')), { code: 'ENOENT' });
   await cli('analyze', '--agent', 'codex', '--agent-timeout-ms', '5000');
   const completed = JSON.parse(await readFile(join(root, '.comment-to-code/analysis.json'), 'utf8'));
-  assert.equal(completed.findings.length, 1);
+  assert.equal(findingsFor(completed).length, 1);
   assert.equal(completed.candidates.length, 1);
   assert.equal(completed.stats.analyzed, 1);
 });
@@ -249,29 +251,29 @@ test('validated batches survive provider failure and resume only remaining targe
   assert.deepEqual(await publishedArtifacts(root), previous);
   const checkpoints = await checkpointEntries(root);
   assert.equal(checkpoints.length, 16);
-  assert.equal((await stat(join(root, '.comment-to-code/findings'))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(root, '.comment-to-code/comments'))).mode & 0o777, 0o700);
   for (const entry of checkpoints) {
     assert.match(entry.name, /^[a-f0-9]{64}\.json$/);
     assert.equal(entry.name, `${entry.finding.inputHash}.json`);
     assert.equal((await stat(entry.path)).mode & 0o777, 0o600);
-    assert.equal(entry.finding.status, 'confirmed');
+    assert.equal(entry.finding.claims[0].status, 'confirmed');
     assert.equal(Object.hasOwn(entry.finding, 'groups'), false);
     assert.equal(Object.hasOwn(entry.finding, 'rules'), false);
   }
-  assert.match(progress, /Checkpointed 16 finding\(s\) \(16 this run\)/);
+  assert.match(progress, /Checkpointed 16 comment\(s\) \(16 this run\)/);
   assert.doesNotMatch(progress, /PRIVATE REVIEW|return input|github\.com/);
   const resumed = fixtureAgent();
   const analysis = await main(['analyze', '--agent', 'omp'], { ...options, runAgent: resumed.runAgent });
   const cachedIds = new Set(checkpoints.map(entry => entry.finding.commentId));
   assert.deepEqual(resumed.batches.flat().map(target => target.commentId).sort(), input.pullRequests.flatMap(pr => pr.comments.map(comment => comment.id)).filter(id => !cachedIds.has(id)).sort());
-  assert.deepEqual(analysis.stats, { comments: 18, analyzed: 2, cached: 16, rules: 1, candidates: 0 });
-  assert.equal(new Set(analysis.findings.map(finding => finding.commentId)).size, 18);
+  assert.deepEqual(analysis.stats, { comments: 18, analyzed: 2, cached: 16, findings: 18, eligible: 18, rules: 1, candidates: 0 });
+  assert.equal(new Set(findingsFor(analysis).map(finding => finding.commentId)).size, 18);
   assert.deepEqual(resumed.consolidations.map(data => data.findings.length), [16, 2]);
   assert.equal(analysis.groups[0].incidents.length, 2);
   assert.equal(analysis.rules[0].incidentCount, 2);
   assert.equal((await checkpointEntries(root)).length, 18);
   assert.deepEqual(JSON.parse(await readFile(join(root, '.comment-to-code/analysis.json'), 'utf8')), analysis);
-  assert.match(progress, /Reused 16 checkpoint finding\(s\)/);
+  assert.match(progress, /Reused 16 checkpoint comment\(s\)/);
   assert.match(await readFile(join(root, 'AGENTS.md'), 'utf8'), /^Human instructions\.\n/);
 
   // A complete previous analysis wins before independent checkpoint lookup.
@@ -327,7 +329,7 @@ test('checkpoint loads reject corrupt, mismatched, tracked, and unsafe paths bef
     else if (scenario === 'null') await writeFile(entry.path, 'null');
     else if (scenario === 'hash') await writeFile(entry.path, JSON.stringify({ ...entry.finding, inputHash: 'a'.repeat(64) === entry.finding.inputHash ? 'b'.repeat(64) : 'a'.repeat(64) }));
     else if (scenario === 'identity') await writeFile(entry.path, JSON.stringify({ ...entry.finding, commentId: 'invented' }));
-    else if (scenario === 'evidence') await writeFile(entry.path, JSON.stringify({ ...entry.finding, evidence: ['https://example.invalid/fabricated'] }));
+    else if (scenario === 'evidence') await writeFile(entry.path, JSON.stringify({ ...entry.finding, claims: [{ ...entry.finding.claims[0], evidence: ['https://example.invalid/fabricated'] }] }));
     else if (scenario === 'tracked') await exec('git', ['add', '-f', entry.path], { cwd: root });
     else if (scenario === 'nonregular') { await rm(entry.path); await mkdir(entry.path); }
     else {
@@ -335,15 +337,15 @@ test('checkpoint loads reject corrupt, mismatched, tracked, and unsafe paths bef
       t.after(() => rm(outside, { recursive: true, force: true }));
       await writeFile(join(outside, entry.name), JSON.stringify(entry.finding));
       if (scenario === 'directory-symlink') {
-        await rm(join(root, '.comment-to-code/findings'), { recursive: true });
-        await symlink(outside, join(root, '.comment-to-code/findings'));
+        await rm(join(root, '.comment-to-code/comments'), { recursive: true });
+        await symlink(outside, join(root, '.comment-to-code/comments'));
       } else {
         await rm(entry.path);
         await symlink(join(outside, entry.name), entry.path);
       }
     }
     let called = false;
-    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: async () => { called = true; throw new Error('must not call model'); } }), /Malformed|input hash|identity|fabricated|tracked|symlink|regular file/i);
+    await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: async () => { called = true; throw new Error('must not call model'); } }), /Malformed|input hash|identity|fabricated|claim ID|tracked|symlink|regular file/i);
     assert.equal(called, false);
     await assert.rejects(stat(join(root, '.comment-to-code/analysis.json')), { code: 'ENOENT' });
   });
@@ -357,11 +359,11 @@ test('checkpoint callbacks reject non-digest path names', async t => {
     for (const operation of ['load', 'save']) {
       await assert.rejects(main(['analyze', '--agent', 'omp'], {
         ...options,
-        analyze: async (_capture, callbacks) => operation === 'load' ? callbacks.loadFinding(inputHash) : callbacks.saveFindings([{ inputHash }]),
-      }), /Invalid finding input hash/);
+        analyze: async (_capture, callbacks) => operation === 'load' ? callbacks.loadComment(inputHash) : callbacks.saveComments([{ inputHash }]),
+      }), /Invalid comment input hash/);
     }
   }
-  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(root, '.comment-to-code/comments')), { code: 'ENOENT' });
 });
 
 test('checkpoint writes recheck effective ignore and tracked paths after model execution', async t => {
@@ -376,15 +378,15 @@ test('checkpoint writes recheck effective ignore and tracked paths after model e
         await writeFile(join(root, '.comment-to-code/new-private.json'), '{}');
         await exec('git', ['add', '-f', '.comment-to-code/new-private.json'], { cwd: root });
       } else if (scenario === 'symlink') {
-        await symlink(root, join(root, '.comment-to-code/findings'));
+        await symlink(root, join(root, '.comment-to-code/comments'));
       } else {
-        await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n${scenario === 'temporary-unignored' ? '/.comment-to-code/findings/*.json\n' : ''}`);
+        await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n${scenario === 'temporary-unignored' ? '/.comment-to-code/comments/*.json\n' : ''}`);
       }
     } });
     await assert.rejects(main(['analyze', '--agent', 'omp'], { ...options, runAgent: agent.runAgent }), /ignore|tracked|symlink/i);
     assert.deepEqual(await publishedArtifacts(root), previous);
     assert.equal(agent.consolidations.length, 0);
-    if (scenario !== 'symlink') await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+    if (scenario !== 'symlink') await assert.rejects(stat(join(root, '.comment-to-code/comments')), { code: 'ENOENT' });
   });
 });
 
@@ -399,13 +401,13 @@ test('an invalid last finding rejects the entire batch before creating checkpoin
     ...options,
     runAgent: async (...args) => {
       const response = JSON.parse(await agent.runAgent(...args));
-      response.findings.at(-1).codeEvidence[0].quote = '+invented code';
+      response.comments.at(-1).claims[0].codeEvidence[0].quote = '+invented code';
       return JSON.stringify(response);
     },
   }), /fabricated|code evidence/i);
   assert.equal(agent.batches.length, 2);
   assert.equal(agent.consolidations.length, 0);
-  await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(root, '.comment-to-code/comments')), { code: 'ENOENT' });
   assert.deepEqual(await publishedArtifacts(root), previous);
 });
 
@@ -435,7 +437,7 @@ test('bounded consolidation failure preserves the validated prefix and old docum
   assert.equal(prefix.groups[0].incidents.length, 1);
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   assert.equal((await checkpointEntries(root)).length, 18);
-  assert.match(progress, /Checkpointed consolidation for 16 finding\(s\)/);
+  assert.match(progress, /Checkpointed consolidation for 16 claim\(s\)/);
   assert.doesNotMatch(progress, /PRIVATE REVIEW|return input|github\.com/);
 
   const invalid = fixtureAgent();
@@ -443,7 +445,7 @@ test('bounded consolidation failure preserves the validated prefix and old docum
     ...options,
     runAgent: async (...args) => {
       const response = JSON.parse(await invalid.runAgent(...args));
-      response.groups[0].incidents.at(-1).commentIds = ['unknown'];
+      response.groups[0].incidents.at(-1).claimIds = ['unknown'];
       return JSON.stringify(response);
     },
   }), /unknown or duplicate/);
@@ -457,7 +459,7 @@ test('bounded consolidation failure preserves the validated prefix and old docum
   assert.equal(resume.batches.length, 0);
   assert.equal(resume.consolidations.length, 1);
   assert.equal(resume.consolidations[0].findings.length, 2);
-  assert.deepEqual(resume.consolidations[0].catalog[0].incidents[0].commentIds, prefix.groups[0].incidents[0].commentIds);
+  assert.deepEqual(resume.consolidations[0].catalog[0].incidents[0].claimIds, prefix.groups[0].incidents[0].claimIds);
   assert.equal(analysis.rules[0].incidentCount, 2);
   assert.equal(analysis.rules[0].commentIds.length, 18);
   assert.equal(JSON.parse(await readFile(statePath, 'utf8')).processed.length, 18);
@@ -524,7 +526,7 @@ test('consolidation writes recheck ignored directory, tracked cache and symlink 
             await writeFile(path, '{}');
             await exec('git', ['add', '-f', path], { cwd: root });
           } else if (scenario === 'symlink') await symlink(join(root, 'AGENTS.md'), path);
-          else await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n/.comment-to-code/findings/\n${scenario === 'temporary-unignored' ? '/.comment-to-code/consolidation.json\n' : ''}`);
+          else await writeFile(join(root, '.gitignore'), `/.comment-to-code/\n!/.comment-to-code/\n/.comment-to-code/capture.json\n/.comment-to-code/analysis.json\n/.comment-to-code/comments/\n${scenario === 'temporary-unignored' ? '/.comment-to-code/consolidation.json\n' : ''}`);
         }
         return response;
       },
@@ -534,4 +536,24 @@ test('consolidation writes recheck ignored directory, tracked cache and symlink 
     assert.deepEqual(await publishedArtifacts(root), old);
     if (scenario.includes('unignored')) await assert.rejects(stat(join(root, '.comment-to-code/consolidation.json')), { code: 'ENOENT' });
   });
+});
+
+test('CLI refuses an old complete analysis before provider calls publication or checkpoint overwrites', async t => {
+  const { root, identify } = await checkout(t);
+  const options = { cwd: root, identify, stdout: output };
+  await main(['run', '--agent', 'omp'], { ...options, capture: async () => reviewedHistory([1, 1]), runAgent: fixtureAgent().runAgent });
+  const path = join(root, '.comment-to-code/analysis.json');
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  const legacy = { ...current, version: 1, findings: findingsFor(current) };
+  delete legacy.comments;
+  await writeFile(path, JSON.stringify(legacy));
+  const before = await publishedArtifacts(root);
+  const checkpoints = await checkpointEntries(root);
+  let calls = 0;
+  await assert.rejects(main(['analyze', '--agent', 'omp'], {
+    ...options, runAgent: async () => { calls++; throw new Error('old schema must fail before provider use'); },
+  }), /Previous analysis is outdated/);
+  assert.equal(calls, 0);
+  assert.deepEqual(await publishedArtifacts(root), before);
+  assert.deepEqual(await checkpointEntries(root), checkpoints);
 });
