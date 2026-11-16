@@ -240,10 +240,10 @@ test('two PR incidents with a shared cause merge into one rule', async () => {
   assert.equal(result.rules[0].evidence.length, 2);
 });
 
-test('multiple replies in one thread are deterministically one incident', async () => {
+test('model-assigned duplicate replies remain one candidate', async () => {
   const input = capture([3]);
   input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'same-defect'; });
-  const result = await analyzeCapture(input, fixtureAgent());
+  const result = await analyzeCapture(input, fixtureAgent({ consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)]) }));
   assert.deepEqual(result.rules, []);
   assert.equal(result.candidates.length, 1);
   assert.equal(result.candidates[0].incidents.length, 1);
@@ -291,11 +291,25 @@ function repairClassification(pr, target) {
   };
 }
 
+function repairGrouping(data, failedRepairIds = ['inline:1:2', 'inline:1:3']) {
+  const incidents = [false, true].map(failed => data.findings.filter(finding => failedRepairIds.includes(finding.commentId) === failed).map(finding => finding.commentId)).filter(ids => ids.length);
+  const response = groupFor(data.findings, incidents, data.catalog);
+  const group = response.groups[0];
+  if (group.existingGroupIndex !== null) {
+    for (const incident of group.incidents) {
+      const failed = failedRepairIds.includes(incident.commentIds[0]);
+      const existing = data.catalog[group.existingGroupIndex].incidents.findIndex(old => old.commentIds.some(id => failedRepairIds.includes(id) === failed));
+      if (existing >= 0) incident.existingIncidentIndex = existing;
+    }
+  }
+  return response;
+}
+
 test('fresh same-thread feedback after a captured partial repair promotes at two, not three, and resumes without calls', async t => {
   const input = failedRepairCapture();
   let checkpoint;
   const result = await analyzeCapture(input, {
-    ...fixtureAgent({ classify: repairClassification }),
+    ...fixtureAgent({ classify: repairClassification, consolidate: repairGrouping }),
     saveConsolidation: async state => { checkpoint = state; },
   });
   assert.equal(result.rules.length, 1);
@@ -306,7 +320,7 @@ test('fresh same-thread feedback after a captured partial repair promotes at two
   assert.equal(result.findings.find(finding => finding.commentId === 'inline:1:4').status, 'ignored');
   const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
   assert.deepEqual(resumed.groups, result.groups);
-  const stale = fixtureAgent({ classifyBatch: () => { throw new Error('v6 findings must remain reusable'); } });
+  const stale = fixtureAgent({ classifyBatch: () => { throw new Error('v6 findings must remain reusable'); }, consolidate: repairGrouping });
   const regenerated = await analyzeCapture(input, {
     ...stale, previous: result, loadConsolidation: async () => ({ ...checkpoint, policyHash: 'a'.repeat(64) }),
   });
@@ -331,10 +345,28 @@ test('additive repair retaining the original return still permits fresh feedback
   pr.commits[0].files[0].patch = hunk;
   pr.commits[1].files[0].patch = `@@ -1,2 +1 @@\n-${partial.split('\n').join('\n-')}\n+${pr.sources[1].content}`;
   pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = hunk; });
-  const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+  const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification, consolidate: repairGrouping }));
   assert.equal(result.groups[0].incidents.length, 2);
   assert.equal(result.rules[0].incidentCount, 2);
   assert.deepEqual(result.rules[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
+});
+
+test('equal second-precision timestamps do not veto model-supported partial repair lineage', async () => {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  pr.comments.slice(1, 3).forEach(comment => {
+    comment.createdAt = pr.comments[0].createdAt;
+    comment.body = `After ${pr.commits[0].sha}, ${comment.body}`;
+  });
+  let checkpoint;
+  const result = await analyzeCapture(input, {
+    ...fixtureAgent({ classify: repairClassification, consolidate: repairGrouping }),
+    saveConsolidation: async state => { checkpoint = state; },
+  });
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.groups[0].incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), [['inline:1:1'], ['inline:1:2', 'inline:1:3']]);
+  const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
+  assert.deepEqual(resumed.groups, result.groups);
 });
 
 function mixedStageCapture(acrossBoundary = false) {
@@ -352,33 +384,28 @@ function mixedStageCapture(acrossBoundary = false) {
   return input;
 }
 
-test('mixed captured stages cannot preserve extra incidents that duplicate either known stage', async () => {
+test('model partition preserves two supported stages and their duplicate memberships', async () => {
   const input = mixedStageCapture();
   const agent = fixtureAgent({
     classify: pr => repairClassification(pr, { commentId: 'inline:1:00' }),
-    consolidate: data => groupFor(data.findings, [['inline:1:00', 'inline:1:01'], ['inline:1:80'], ['inline:1:81']]),
+    consolidate: data => repairGrouping(data, ['inline:1:01', 'inline:1:81']),
   });
   const result = await analyzeCapture(input, agent);
-  assert.equal(result.groups[0].incidents.length, 1, 'exact-stage overlap conservatively joins the model-mixed incident, never inflating recurrence');
-  assert.deepEqual(result.groups[0].incidents[0].commentIds, idsOf(result));
-  assert.deepEqual(result.rules, []);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.groups[0].incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), [['inline:1:00', 'inline:1:80'], ['inline:1:01', 'inline:1:81']]);
 });
 
-test('mixed captured stages deduplicate after existingIncidentIndex append across the batch boundary and resume', async () => {
+test('model existingIncidentIndex joins preserve duplicate memberships across batches and resume', async () => {
   const input = mixedStageCapture(true);
   let checkpoint;
   const agent = fixtureAgent({
     classify: pr => repairClassification(pr, { commentId: 'inline:1:00' }),
-    consolidate: data => {
-      const response = groupFor(data.findings, data.catalog.length ? undefined : [data.findings.map(finding => finding.commentId)], data.catalog);
-      if (data.catalog.length) response.groups[0].incidents[0].existingIncidentIndex = 0;
-      return response;
-    },
+    consolidate: data => repairGrouping(data, ['inline:1:01', 'inline:1:81']),
   });
   const result = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { checkpoint = state; } });
   assert.deepEqual(agent.calls.filter(call => !call.data.targets).map(call => call.data.findings.length), [16, 2]);
-  assert.equal(result.groups[0].incidents.length, 1);
-  assert.deepEqual(result.rules, []);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.groups[0].incidents.map(incident => incident.commentIds.length).sort((a, b) => a - b), [2, 16]);
   const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
   assert.deepEqual(resumed.groups, result.groups);
 });
@@ -430,6 +457,8 @@ test('fresh same-thread repair in a delegated file is not erased by an unchanged
   assert.equal(result.rules[0].incidentCount, 2);
   assert.equal(agent.calls.length, 2);
   pr.comments[1].originalCommitId = initial;
+  pr.sources = pr.sources.filter(source => source.ref !== partial);
+  pr.comments[1].createdAt = pr.comments[0].createdAt;
   pr.comments.push({ ...pr.comments[1], id: 'inline:1:3', body: 'Duplicate of the same remaining502 failure after the referenced partial policy commit; no further attempted repair.' });
   let checkpoint;
   const staleAnchor = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { checkpoint = state; } });
@@ -438,32 +467,68 @@ test('fresh same-thread repair in a delegated file is not erased by an unchanged
   assert.equal(agent.calls.length, 4);
   const resumed = await analyzeCapture(input, { previous: staleAnchor, loadConsolidation: async () => checkpoint });
   assert.deepEqual(resumed.groups, staleAnchor.groups);
-  const readmeFile = { path: 'README.md', previousPath: null, status: 'added', patch: '@@ -0,0 +1 @@\n+# Documentation only' };
-  pr.commits = [{ ...pr.commits[1], message: 'Documentation only', files: [readmeFile] }, pr.commits[2]];
-  pr.files.push(readmeFile);
-  pr.limitations = ['Earlier policy versions are not available in the captured commit history.'];
-  pr.comments.slice(1).forEach(comment => Object.assign(comment, {
-    originalCommitId: partial,
-    body: 'The newer SHA changes only documentation. This reproduces the same original failure, with no evidenced relevant attempted repair.',
-  }));
-  const sameObservedCode = await analyzeCapture(input, agent);
-  assert.equal(sameObservedCode.candidates[0].incidents.length, 1, 'identical observed caller versions and no differing comparable policy state cannot manufacture a repair');
-  assert.deepEqual(sameObservedCode.rules, []);
-  assert.equal(agent.calls.length, 6);
 });
 
-test('unverifiable same-thread code or chronology cannot manufacture another occurrence', async () => {
+test('disjoint delegated repair patches remain usable without initial policy snapshots or overlapping post-images', async () => {
+  const input = capture([2]);
+  const pr = input.pullRequests[0];
+  const initial = '1'.repeat(40);
+  const partial = '2'.repeat(40);
+  const final = '3'.repeat(40);
+  const caller = "import { titleFor } from './policy.js';\nexport const renderTitle = status => titleFor(status);";
+  const callerFile = { path: 'caller.js', previousPath: null, status: 'added', patch: `@@ -0,0 +1,2 @@\n+${caller.split('\n').join('\n+')}` };
+  const placed = "if (status === 200) return 'Placed';";
+  const unknown = "if (status === 502) return 'Unknown';";
+  const partialPatch = `@@ -10 +10 @@\n-if (status === 200) return 'Rejected';\n+${placed}`;
+  const finalPatch = `@@ -100 +100 @@\n-if (status === 502) return 'Rejected';\n+${unknown}`;
+  const policy = patch => ({ path: 'policy.js', previousPath: null, status: 'modified', patch });
+  pr.baseSha = '0'.repeat(40);
+  pr.headSha = final;
+  pr.commits = [
+    { sha: initial, message: 'Add a caller for the preexisting policy', authoredAt: null, files: [callerFile], limitations: [] },
+    { sha: partial, message: 'Correct the successful outcome title', authoredAt: null, files: [policy(partialPatch)], limitations: [] },
+    { sha: final, message: 'Correct the uncertain outcome title', authoredAt: null, files: [policy(finalPatch)], limitations: [] },
+  ];
+  pr.files = [callerFile, policy(`${partialPatch}\n${finalPatch}`)];
+  pr.sources = [initial, final].map(ref => ({ path: 'caller.js', ref, content: caller, unavailableReason: null }));
+  pr.comments.forEach((comment, index) => Object.assign(comment, {
+    path: 'caller.js', threadId: 'one-title-review', originalCommitId: initial, diffHunk: callerFile.patch,
+    createdAt: `2026-01-01T0${index ? 3 : 1}:00:00Z`,
+    body: index ? `After ${partial} corrected the successful200 title in the preexisting policy, the same caller still shows Rejected for502. Correct that uncertainty branch; keep403 rejected.` :
+      'The caller uses the preexisting title policy, which wrongly labels successful200 as Rejected.',
+  }));
+  const cause = 'Choosing a rejected title for other order outcomes';
+  const prevention = 'Choose the title from the actual outcome, preserving definitely-not-sent rejection.';
+  const agent = fixtureAgent({
+    classify: (pr, target) => ({
+      ...confirmed(pr), rootCause: cause, prevention, resolution: 'The successful and uncertain outcome branches now choose their corresponding titles.',
+      evidence: [partial, final], codeEvidence: [{
+        ref: target.commentId === 'inline:1:1' ? partial : final,
+        path: 'policy.js', quote: `+${target.commentId === 'inline:1:1' ? placed : unknown}`,
+      }],
+    }),
+    consolidate: data => ({ groups: [{
+      existingGroupIndex: null, rootCause: cause, prevention,
+      incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'The partial patch corrected200 at line10 after the first complaint; fresh feedback identifies502, corrected by the final patch at line100. Both enforce outcome-specific titles.' })),
+    }] }),
+  });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.equal(agent.calls.length, 2);
+});
+
+test('model uncertainty about incomplete original metadata remains one candidate', async () => {
   const controls = [
     pr => { pr.sources[2].content = null; pr.sources[2].unavailableReason = 'Not available'; },
     pr => { pr.comments.slice(1, 3).forEach(comment => { comment.originalCommitId = pr.baseSha; }); },
     pr => { pr.comments.slice(1, 3).forEach(comment => { comment.createdAt = null; }); },
-    pr => { pr.comments.slice(1, 3).forEach(comment => { comment.createdAt = pr.comments[0].createdAt; }); },
     pr => { pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = null; }); },
   ];
   for (const mutate of controls) {
     const input = failedRepairCapture();
     mutate(input.pullRequests[0]);
-    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+    input.pullRequests[0].comments.slice(1, 3).forEach(comment => { comment.body = 'Another reproduction without an evidenced new attempt or reviewed state.'; });
+    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification, consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)]) }));
     assert.deepEqual(result.rules, []);
     assert.equal(result.candidates[0].incidents.length, 1);
     assert.deepEqual(result.candidates[0].incidents[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
@@ -526,7 +591,7 @@ test('complete original chronology and shared code reach the catalog across the 
   pr.comments.push(...Array.from({ length: 15 }, (_, index) => ({
     ...pr.comments[0], id: `inline:1:1-${String(index).padStart(2, '0')}`,
   })));
-  const agent = fixtureAgent({ classify: repairClassification });
+  const agent = fixtureAgent({ classify: repairClassification, consolidate: repairGrouping });
   const result = await analyzeCapture(input, agent);
   const calls = agent.calls.filter(call => !call.data.targets);
   assert.deepEqual(calls.map(call => call.data.findings.length), [16, 2]);
@@ -536,7 +601,8 @@ test('complete original chronology and shared code reach the catalog across the 
   assert.deepEqual(data.comments.filter(comment => comment.member).map(comment => comment.commentId), result.findings.filter(finding => finding.status === 'confirmed').map(finding => finding.commentId));
   assert.equal(data.comments.filter(comment => comment.commentId === 'inline:1:1').length, 1);
   assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:2').body, pr.comments[1].body);
-  assert.deepEqual(data.comments.find(comment => comment.commentId === 'inline:1:2').capturedAnchor, { startLine: 1, endLine: 1 });
+  assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:2').originalCommitId, pr.comments[1].originalCommitId);
+  assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:2').diffHunk, pr.comments[1].diffHunk);
   assert.equal(data.pullRequests.length, 1);
   const context = data.pullRequests[0];
   for (const source of pr.sources) {
@@ -547,7 +613,7 @@ test('complete original chronology and shared code reach the catalog across the 
   assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:4').member, false);
 });
 
-test('unknown feedback neither adds a stage nor bridges supported stages across order, batches and resume', async () => {
+test('model-assigned lineage survives ambiguous metadata across order, batches and resume', async () => {
   for (const unknownId of ['inline:1:0', 'inline:1:1z', 'inline:1:9']) {
     for (const unknownContext of ['missing-ref', 'missing-time', 'other-path']) {
       for (const acrossBoundary of [false, true]) {
@@ -564,7 +630,7 @@ test('unknown feedback neither adds a stage nor bridges supported stages across 
         })));
         let checkpoint;
         const agent = fixtureAgent({ classify: repairClassification, consolidate: data => {
-          const response = groupFor(data.findings, undefined, data.catalog);
+          const response = repairGrouping(data, ['inline:1:2', unknownId]);
           response.groups[0].incidents.reverse();
           return response;
         } });
@@ -589,7 +655,7 @@ test('captured partial repair evidence survives omitted commits and misleading a
   ]) {
     const input = failedRepairCapture();
     mutate(input.pullRequests[0]);
-    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification, consolidate: repairGrouping }));
     assert.equal(result.rules[0].incidentCount, 2);
   }
 });
@@ -650,7 +716,10 @@ test('complete current PR artifacts survive cross-file context while finished PR
   pr.files.push(unrelated);
   pr.sources.push({ path: 'README.md', ref: unrelatedSha, content: '# Unrelated documentation', unavailableReason: null });
   pr.comments.push({ ...pr.comments[0], id: 'review:old', kind: 'review', threadId: 'review:old', path: null, body: 'Thanks, the final fix resolves this.' });
-  const agent = fixtureAgent({ classify: (pr, target) => target.commentId === 'review:old' ? disposition('praise') : confirmed(pr) });
+  const agent = fixtureAgent({
+    classify: (pr, target) => target.commentId === 'review:old' ? disposition('praise') : confirmed(pr),
+    consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)], data.catalog),
+  });
   const result = await analyzeCapture(input, agent);
   const [first, second] = agent.calls.filter(call => !call.data.targets).map(call => call.data);
   assert.equal(first.pullRequests[0].codeContext, 'complete-captured-pr');
@@ -693,7 +762,7 @@ test('a PR reentering after sixteen findings retains earlier code and renamed cr
   ];
   const agent = fixtureAgent({ classify: (pr, target) => target.commentId === 'inline:1:4' ? disposition('praise') : {
     ...repairClassification(pr, target), codeEvidence: [{ ref: pr.headSha, path: 'consumer.js', quote: `+${after}` }],
-  } });
+  }, consolidate: repairGrouping });
   const result = await analyzeCapture(input, agent);
   assert.equal(result.rules[0].incidentCount, 2);
   const second = agent.calls.filter(call => !call.data.targets)[1].data;
@@ -733,20 +802,6 @@ test('semantic consolidation can merge distinct threads discussing the same defe
   assert.equal(result.candidates[0].incidents.length, 1);
 });
 
-test('overlapping thread sets collapse transitively without losing comments', async () => {
-  const input = capture([4]);
-  input.pullRequests[0].comments[0].threadId = 'a';
-  input.pullRequests[0].comments[1].threadId = 'b';
-  input.pullRequests[0].comments[2].threadId = 'a';
-  input.pullRequests[0].comments[3].threadId = 'b';
-  const agent = fixtureAgent({ consolidate: data => {
-    const ids = data.findings.map(finding => finding.commentId);
-    return groupFor(data.findings, [[ids[0]], [ids[1]], [ids[2], ids[3]]]);
-  } });
-  const result = await analyzeCapture(input, agent);
-  assert.equal(result.candidates[0].incidents.length, 1);
-  assert.deepEqual(result.candidates[0].incidents[0].commentIds, idsOf(result));
-});
 
 test('reruns cache findings but reconsolidate current evidence without incident inflation', async () => {
   const input = capture();
@@ -1244,13 +1299,13 @@ test('bounded consolidation reuses a mechanism beyond sixteen findings and prese
   assert.deepEqual(calls[1].data.findings, result.findings.slice(16));
 });
 
-test('cross-batch thread echoes and explicit same-defect joins count once while new defects recur', async () => {
+test('cross-batch model same-defect joins count once while new defects recur', async () => {
   const input = capture([19]);
   const sorted = [...input.pullRequests[0].comments].sort((a, b) => a.id.localeCompare(b.id));
   sorted.slice(0, 17).forEach(comment => { comment.threadId = 'original-defect'; });
   const agent = fixtureAgent({ consolidate: data => {
-    const result = groupFor(data.findings, undefined, data.catalog);
-    if (data.catalog.length) result.groups[0].incidents[1].existingIncidentIndex = 0;
+    const result = groupFor(data.findings, data.catalog.length ? [[sorted[16].id, sorted[17].id], [sorted[18].id]] : [data.findings.map(finding => finding.commentId)], data.catalog);
+    if (data.catalog.length) result.groups[0].incidents[0].existingIncidentIndex = 0;
     return result;
   } });
   const states = [];
@@ -1347,17 +1402,18 @@ test('invalid snapshot references and a bad last addition cannot mutate or check
   assert.deepEqual(resumed.groups, complete.groups);
 });
 
-test('snapshot references stay valid when new groups precede existing groups and thread collapse renumbers incidents', async () => {
+test('snapshot references stay valid when new groups precede existing groups with model duplicate joins', async () => {
   const input = capture([34]);
   const sorted = [...input.pullRequests[0].comments].sort((a, b) => a.id.localeCompare(b.id));
   sorted.slice(0, 17).forEach(comment => { comment.threadId = 'shared'; });
   let calls = 0;
   const agent = fixtureAgent({ consolidate: data => {
     calls++;
-    if (calls === 1) return groupFor(data.findings);
+    if (calls === 1) return groupFor(data.findings, [data.findings.map(finding => finding.commentId)]);
     const index = data.catalog.findIndex(group => group.rootCause === confirmed(input.pullRequests[0]).rootCause);
     const result = groupFor(data.findings, undefined, data.catalog);
     if (calls === 2) {
+      result.groups[0].incidents[0].existingIncidentIndex = data.catalog[index].incidents.findIndex(incident => incident.commentIds.includes(sorted[0].id));
       const singleton = result.groups[0].incidents.pop();
       result.groups.unshift({ existingGroupIndex: null, rootCause: 'A distinct invariant', prevention: 'Enforce the distinct invariant.', incidents: [singleton] });
     } else {
@@ -1435,18 +1491,23 @@ test('loaded consolidation rejects malformed state, cross-repository identity, a
 test('complete catalog budgets pack smaller batches or fail before a call without losing saved progress', async () => {
   const input = capture([20]);
   input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'one-defect'; });
-  const initial = fixtureAgent();
+  const joinSameDefect = data => {
+    const response = groupFor(data.findings, [data.findings.map(finding => finding.commentId)], data.catalog);
+    response.groups[0].incidents[0].existingIncidentIndex = data.catalog.length ? 0 : null;
+    return response;
+  };
+  const initial = fixtureAgent({ consolidate: joinSameDefect });
   const previous = await analyzeCapture(input, initial);
   const firstPrompt = initial.calls.find(call => !call.data.targets).prompt;
   const maxInputBytes = Buffer.byteLength(firstPrompt) - 1;
-  const smaller = fixtureAgent();
+  const smaller = fixtureAgent({ consolidate: joinSameDefect });
   const result = await analyzeCapture(input, { ...smaller, previous, maxInputBytes });
   assert.ok(smaller.calls[0].data.findings.length < 16);
   assert.deepEqual(result.groups, previous.groups);
   for (const call of smaller.calls) assert.ok(Buffer.byteLength(call.prompt) <= maxInputBytes);
   const states = [];
   const oversizedCatalog = fixtureAgent({ consolidate: data => {
-    const result = groupFor(data.findings, undefined, data.catalog);
+    const result = joinSameDefect(data);
     result.groups[0].incidents[0].explanation = 'A full source-grounded explanation. '.repeat(2000);
     return result;
   } });
@@ -1474,17 +1535,9 @@ test('consolidation checkpoint callback failures propagate before later calls', 
   assert.equal(save.calls.length, 1);
 });
 
-test('matching state must already collapse captured threads, and partial fenced prose is never salvaged', async () => {
+test('partial fenced prose is never salvaged or checkpointed', async () => {
   const input = capture([2]);
-  let separate;
-  await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async state => { separate = state.groups; } });
-  input.pullRequests[0].comments.forEach(comment => { comment.threadId = 'one-defect'; });
-  let state;
-  const previous = await analyzeCapture(input, { ...fixtureAgent(), saveConsolidation: async checkpoint => { state = checkpoint; } });
-  await assert.rejects(analyzeCapture(input, {
-    previous, loadConsolidation: async () => ({ ...state, groups: separate }),
-    runAgent: async () => { throw new Error('must not call model'); },
-  }), /uncollapsed thread/);
+  const previous = await analyzeCapture(input, fixtureAgent());
   let saves = 0;
   const partial = fixtureAgent({ consolidate: data => `\`\`\`json\n${JSON.stringify(groupFor(data.findings))}\n\`\`\`\nShould I generate the remaining groups separately?` });
   await assert.rejects(analyzeCapture(input, {
