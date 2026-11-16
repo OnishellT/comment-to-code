@@ -393,7 +393,7 @@ test('an invalid last finding rejects the entire batch before creating checkpoin
       return JSON.stringify(response);
     },
   }), /fabricated|code evidence/i);
-  assert.equal(agent.batches.length, 1);
+  assert.equal(agent.batches.length, 2);
   assert.equal(agent.consolidations.length, 0);
   await assert.rejects(stat(join(root, '.comment-to-code/findings')), { code: 'ENOENT' });
   assert.deepEqual(await publishedArtifacts(root), previous);

@@ -84,6 +84,121 @@ function idsOf(analysis) {
   return analysis.findings.map(finding => finding.commentId);
 }
 
+function unchangedCitation(pr) {
+  return { ...confirmed(pr), codeEvidence: [{ ref: pr.headSha, path: 'input.js', quote: 'const located = true;' }] };
+}
+
+function withLocatingLine(input) {
+  for (const pr of input.pullRequests) {
+    for (const source of pr.sources) source.content = `const located = true;\n${source.content}`;
+  }
+  return input;
+}
+
+test('one citation correction accepts changed proof and publishes only the complete validated replacement', async () => {
+  const input = withLocatingLine(capture());
+  const saves = [];
+  const agent = fixtureAgent({ classifyBatch: data => classifications(data, data.validationFeedback ? confirmed : unchangedCitation) });
+  const result = await analyzeCapture(input, { ...agent, saveFindings: async findings => { saves.push(structuredClone(findings)); } });
+  assert.equal(agent.calls.length, 3);
+  assert.deepEqual(agent.calls[1].data.targets, agent.calls[0].data.targets);
+  assert.deepEqual(agent.calls[1].data.pullRequests, input.pullRequests);
+  assert.deepEqual(JSON.parse(agent.calls[1].data.validationFeedback.candidate), classifications(agent.calls[0].data, unchangedCitation));
+  assert.deepEqual(agent.calls[1].data.validationFeedback.diagnostic, {
+    commentId: 'inline:1:1', ref: input.pullRequests[0].headSha, path: 'input.js', quote: 'const located = true;',
+  });
+  assert.deepEqual(saves, [result.findings]);
+  assert.equal(result.stats.analyzed, 2);
+  const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-citation-'));
+  try {
+    await publishRules(cwd, result);
+    assert.ok((await readFile(join(cwd, 'rules.md'), 'utf8')).includes('Guard optional inputs'));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a second bad citation stops atomically and preserves a resumable valid batch', async () => {
+  const input = withLocatingLine(capture([17]));
+  const checkpoints = new Map();
+  const agent = fixtureAgent({ classifyBatch: data => classifications(data, data.targets.length === 16 ? confirmed : unchangedCitation) });
+  await assert.rejects(analyzeCapture(input, {
+    ...agent, saveFindings: async findings => { for (const finding of findings) checkpoints.set(finding.inputHash, structuredClone(finding)); },
+  }), /Invalid analysis: fabricated or missing captured code evidence/);
+  assert.equal(agent.calls.length, 3);
+  assert.equal(checkpoints.size, 16);
+  const original = structuredClone([...checkpoints]);
+  const resumed = fixtureAgent();
+  const result = await analyzeCapture(input, { ...resumed, loadFinding: async hash => checkpoints.get(hash) ?? null });
+  assert.equal(result.stats.cached, 16);
+  assert.equal(resumed.calls[0].data.targets.length, 1);
+  assert.deepEqual([...checkpoints], original);
+});
+
+test('citation correction can preserve model uncertainty without promoting a rule', async () => {
+  const agent = fixtureAgent({ classifyBatch: data => classifications(data, data.validationFeedback
+    ? () => disposition('defect', 'unresolved', 'uncertain') : unchangedCitation) });
+  const result = await analyzeCapture(withLocatingLine(capture()), agent);
+  assert.equal(agent.calls.length, 2);
+  assert.deepEqual(result.findings.map(finding => finding.status), ['unresolved', 'unresolved']);
+  assert.deepEqual(result.rules, []);
+});
+
+test('non-citation failures receive no corrective call', async () => {
+  for (const response of [
+    '{', '{"findings":[],"findings":[]}', { findings: [] },
+    { findings: [{ commentId: 'unknown', ...confirmed(capture().pullRequests[0]) }] },
+    { findings: [{ commentId: 'inline:1:1', ...confirmed(capture().pullRequests[0]), codeEvidence: [{}] }] },
+  ]) {
+    const agent = fixtureAgent({ classifyBatch: () => response });
+    await assert.rejects(analyzeCapture(capture([1]), agent), /Invalid analysis/);
+    assert.equal(agent.calls.length, 1);
+  }
+  let calls = 0;
+  await assert.rejects(analyzeCapture(capture([1]), { runAgent: async () => {
+    calls++;
+    throw new Error('transport failed');
+  } }), /transport failed/);
+  assert.equal(calls, 1);
+});
+
+test('an early bad citation cannot make a malformed or incomplete batch eligible for correction', async () => {
+  for (const mutate of [
+    result => { result.findings.pop(); },
+    result => { result.findings[1].commentId = 'unknown'; },
+    result => { result.findings[1].commentId = result.findings[0].commentId; },
+    result => { result.findings[1].category = 'invalid'; },
+    result => { result.findings[1].codeEvidence = [{}]; },
+  ]) {
+    const agent = fixtureAgent({ classifyBatch: data => {
+      const result = classifications(data, unchangedCitation);
+      mutate(result);
+      return result;
+    } });
+    let saves = 0;
+    await assert.rejects(analyzeCapture(withLocatingLine(capture()), {
+      ...agent, saveFindings: async () => { saves++; },
+    }), /Invalid analysis/);
+    assert.equal(agent.calls.length, 1);
+    assert.equal(saves, 0);
+  }
+});
+
+test('oversized correction fails before a second call without truncation or writes', async () => {
+  const input = withLocatingLine(capture([1]));
+  const agent = fixtureAgent({ classifyBatch: data => {
+    const result = classifications(data, unchangedCitation);
+    result.findings[0].resolution = 'x'.repeat(100000);
+    return result;
+  } });
+  let saves = 0;
+  await assert.rejects(analyzeCapture(input, {
+    ...agent, maxInputBytes: 20000, saveFindings: async () => { saves++; },
+  }), /Analysis input budget exceeded.*evidence was not truncated/);
+  assert.equal(agent.calls.length, 1);
+  assert.equal(saves, 0);
+});
+
 test('empty history makes no agent calls and records complete empty analysis', async () => {
   const input = capture([]);
   const result = await analyzeCapture(input);
