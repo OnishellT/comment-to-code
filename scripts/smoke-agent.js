@@ -110,7 +110,7 @@ for (let number = 20; number <= 30; number++) {
 }
 
 const failedRepair = pullRequest(32, {
-  path: 'src/order-title.js', title: 'Describe the actual order outcome in the result title',
+  path: 'src/order-title-policy.js', title: 'Describe the actual order outcome in the result title',
   body: 'HTTP 200 means placed; 502 means the upstream outcome is unknown; 403 means the order was not sent and may retain the rejected fallback.',
   before: "export function resultTitle(status) { return 'Order rejected'; }\n",
   after: "export function resultTitle(status) { return status === 200 ? 'Order placed' : status === 502 ? 'Outcome unknown' : 'Order rejected'; }\n",
@@ -121,6 +121,15 @@ const partialAt = '2026-01-02T12:00:00Z';
 const followupAt = '2026-01-02T13:00:00Z';
 const partialTitle = "export function resultTitle(status) { return status === 200 ? 'Order placed' : 'Order rejected'; }\n";
 const titlePath = failedRepair.comments[0].path;
+const originalTitleSha = failedRepair.comments[0].originalCommitId;
+const callerPath = 'src/order-title.js';
+const caller = "import { resultTitle } from './order-title-policy.js';\nexport const renderOrderTitle = result => resultTitle(result.status);\n";
+const callerFile = { path: callerPath, previousPath: null, status: 'added', patch: `@@ -0,0 +1,2 @@\n+${caller.trimEnd().split('\n').join('\n+')}` };
+failedRepair.baseSha = 'e'.repeat(40);
+failedRepair.commits[0].files.push(callerFile);
+failedRepair.files[0] = { ...failedRepair.files[0], status: 'added', patch: `@@ -0,0 +1 @@\n+${failedRepair.sources[1].content.trim()}` };
+failedRepair.files.push(callerFile);
+Object.assign(failedRepair.comments[0], { path: callerPath, diffHunk: callerFile.patch });
 failedRepair.commits.splice(1, 0, {
   sha: partialSha, message: 'Attempt to choose the result title by response status', authoredAt: partialAt,
   files: [{ path: titlePath, previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${failedRepair.sources[0].content.trim()}\n+${partialTitle.trim()}` }], limitations: [],
@@ -129,12 +138,15 @@ failedRepair.commits[2].files = [{
   path: titlePath, previousPath: null, status: 'modified',
   patch: `@@ -1 +1 @@\n-${partialTitle.trim()}\n+${failedRepair.sources[1].content.trim()}`,
 }];
-failedRepair.sources.push({ path: titlePath, ref: partialSha, content: partialTitle, unavailableReason: null });
+// Inline capture retrieves the caller's original/head versions, not policy snapshots.
+failedRepair.sources = [originalTitleSha, failedRepair.headSha].map(ref => ({
+  path: callerPath, ref, content: caller, unavailableReason: null,
+}));
 failedRepair.comments.push({
   ...failedRepair.comments[0], id: 'inline:3200', url: `${failedRepair.url}#discussion_r3200`,
-  createdAt: followupAt, updatedAt: followupAt, originalCommitId: partialSha,
-  diffHunk: `@@ -1 +1 @@\n-${failedRepair.sources[0].content.trim()}\n+${partialTitle.trim()}`,
-  body: 'The new 200-specific title fixes the successful path, but 502 still says Order rejected even though the upstream outcome is unknown. Add the uncertainty title for 502; keep the rejected fallback for definitely-not-sent failures such as 403.',
+  createdAt: followupAt, updatedAt: followupAt, originalCommitId: originalTitleSha,
+  diffHunk: callerFile.patch,
+  body: `After ${partialSha} changed the delegated title policy, 200 now displays Order placed. The same caller still displays Order rejected for502 even though that upstream outcome is unknown. Add the uncertainty title for502; keep the rejected fallback for definitely-not-sent403. This reply retains the original caller anchor, not the attempted policy version.`,
 }, {
   ...failedRepair.comments[0], id: 'review:3201', kind: 'review', threadId: 'review:3201', url: `${failedRepair.url}#pullrequestreview-3201`,
   createdAt: followupAt, updatedAt: followupAt, originalCommitId: partialSha, path: null, line: null, diffHunk: null,

@@ -231,7 +231,7 @@ const CONSOLIDATION_INSTRUCTIONS = `Consolidate the current validated findings i
 Assign EVERY current findings ID exactly once; no omitted, invented, duplicate, or catalog-only IDs. Indices are zero-based array positions in THIS prompt's catalog snapshot, not permanent IDs. Reuse an existing group when the same mechanism and prevention apply: set existingGroupIndex to its index. Set rootCause/prevention both to null to inherit, or both to nonempty text to refine the hypothesis against ALL old and new observed resolutions. Never replace just one field. Reword a false case-specific hypothesis rather than preserving its first incident's name or adding incident-specific AND clauses. The replacement must express ONE minimal preventive core supported by every member, not a broader topic. Mention each existing group at most once. Otherwise use existingGroupIndex null and nonempty rootCause/prevention. For another report of the SAME code state/defect as a catalog incident, set existingIncidentIndex to its index; this adds comments, NOT recurrence. For an independent original defect OR fresh substantive feedback after an evidenced relevant attempted fix, use null: a failed repair is another mistake even while completing one repair. New groups cannot reference existing incidents. Never reference additions from this response; only the supplied snapshot. Do not rewrite or re-emit prior memberships.
 Each group must share one underlying failure mechanism and the same preventive intervention must address EVERY incident in that group. Sharing a topic, subsystem, language, file, convention, or broad quality goal is insufficient. Do not combine distinct mechanisms into a broad cause or an AND-checklist of unrelated safeguards: if an incident needs a different preventive intervention, put it in a separate group. Multiple steps are acceptable only when they form the same intervention needed by every incident, not separate clauses for different incidents. Merge synonymous/overlapping descriptions of the SAME mechanism and intervention rather than creating duplicate rules; do not merge distinct mechanisms merely to reduce the rule count. Groups with a single supported occurrence are valid candidates. A singleton cannot acquire recurrence by association with unrelated defects. Causal correctness takes priority over fewer rules. Distinct original defects in ONE PR can count separately; do not require distinct PRs. Unchanged reposts, acknowledgements, replies and duplicate inline/review reports of the same post-fix state count ONCE, even across threads/PRs. A new PR, thread, timestamp, SHA, unrelated change, or repeated "still broken" text alone is NOT evidence of an attempted relevant repair. Missing chronology/code must not manufacture another occurrence. Include exactly the specified fields and never include owned comment-to-code markers.
 For EVERY incident, compare the proposed mechanism and prevention with its observed resolution. The same preventive invariant must explain each observed fix, not merely the initial complaint or a common noun. Do not impose a remedy that conflicts with an accepted alternative fix. Different implementations may enforce the same invariant; different incident-specific clauses do not. Scaling a simulated quantity and draining leftover faults are separate mechanisms even in one simulator. Adding missing work and blocking unnecessary work are not recurrences solely because they concern the same operation. Correcting a test's coverage description is not the same fix as adding a regression oracle. Split such groups; do not manufacture support for each clause from the aggregate incident count.
-Use original comments alongside catalog member resolutions and shared captured PR sources/changes to establish the sequence: original complaint, relevant attempted change, fresh substantive feedback, and accepted observed resolution. Context-only comments are NOT additional findings or occurrences. originalCommitId is an ORIGINAL anchor, NOT a guaranteed current reviewed version; authoredAt is captured commit metadata, not proof of push/review order. Intermediate reviewed commits may be absent after squash/rebase. Source fingerprints prove exact same-path content equality only, NOT relevant repairs. capturedAnchor only corroborates the comment's hunk against that original source; null means unavailable/incompatible evidence, not an invented version. Same-thread separation requires corroborated, overlapping captured code windows that differ and ordered comment times. This only PERMITS separation: establish from substantive feedback and actual captured artifacts that the change attempted the relevant repair and the new feedback addresses that changed state. Identical relevant code at another SHA does not recur. Ambiguous same-thread feedback cannot add an occurrence or erase otherwise supported stages. Different-thread reports also need substantive evidence of distinct original defects or fresh failed repairs, not thread identity. In each incident's explanation, identify the original defect or fresh failed repair (or duplicate referenced state), the supporting chronology/code and how its accepted observed resolution enforces this group's ONE shared preventive invariant. Do not infer the accepted fix from a complaint or impose a remedy contradicted by the final resolution.
+Use original comments alongside catalog member resolutions and shared captured PR sources/changes to establish the sequence: original complaint, relevant attempted change, fresh substantive feedback, and accepted observed resolution. Context-only comments are NOT additional findings or occurrences. originalCommitId is an ORIGINAL anchor, NOT a guaranteed current reviewed version; authoredAt is captured commit metadata, not proof of push/review order. Intermediate reviewed commits may be absent after squash/rebase. Source fingerprints prove exact same-path content equality only, NOT relevant repairs or equality of the whole causal state. capturedAnchor only corroborates the comment's hunk against that original source; null means unavailable/incompatible evidence, not an invented version. A relevant attempted repair can be additive or in a delegated file whose actual patch is captured even when the commented caller stays unchanged and no delegated-file snapshot was collected. Compare the complete available PR artifacts, not one window or an old hunk retained elsewhere. Ordered comments and differing comparable captured code only PERMIT separation: establish from substantive feedback and actual artifacts that the change attempted the relevant repair and the new feedback addresses that changed state. Do not invent a current-state link when the original anchor is stale. Identical relevant code at another SHA does not recur. Unrelated changes remain one occurrence; mechanical artifact comparison cannot determine their relevance for you. Ambiguous same-thread feedback cannot add an occurrence or erase otherwise supported stages. Different-thread reports also need substantive evidence of distinct original defects or fresh failed repairs, not thread identity. In each incident's explanation, identify the original defect or fresh failed repair (or duplicate referenced state), the supporting chronology/code and how its accepted observed resolution enforces this group's ONE shared preventive invariant. Do not infer the accepted fix from a complaint or impose a remedy contradicted by the final resolution.
 Full source/patch artifacts are supplied once for PRs represented by the CURRENT delta, including their earlier captured versions and cross-file fixes. Completed PRs retain original member commentary and each validated finding's original cause, prevention, resolution and evidence, not repeated full code. This is consolidation of validated findings, NOT a fresh full-code review of every old PR. codeContext identifies this distinction; do not infer unavailable intermediate code from metadata or hashes.
 Return only finalized additions with supported explanations, never provisional entries or planning placeholders. Before emitting JSON, verify that flattening all incident commentIds yields every CURRENT findings ID exactly once across the entire response.`;
 
@@ -289,37 +289,87 @@ function consolidationArtifacts(pr) {
   };
 }
 
-function capturedAnchor(context, comment) {
-  if (!comment.path || !comment.originalCommitId || typeof comment.diffHunk !== 'string') return null;
-  const source = context.sources.find(source => source.path === comment.path && source.refs.includes(comment.originalCommitId) && typeof source.content === 'string');
-  if (!source) return null;
-  const [header, ...lines] = comment.diffHunk.trimEnd().split('\n');
-  const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(header);
-  if (!match || Number(match[1]) < 1) return null;
-  const code = [];
+function patchWindows(patch) {
+  if (typeof patch !== 'string') return [];
+  const windows = [];
+  const lines = patch.split('\n');
+  if (lines.at(-1) === '') lines.pop();
   for (const line of lines) {
-    if (line.startsWith(' ') || line.startsWith('+')) code.push(line.slice(1));
-    else if (!line.startsWith('-') && !line.startsWith('\\')) return null;
+    const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (match) windows.push({ startLine: Number(match[1]), count: Number(match[2] ?? 1), lines: [] });
+    else if (windows.length) {
+      if (line.startsWith(' ') || line.startsWith('+')) windows.at(-1).lines.push(line.slice(1));
+      else if (!line.startsWith('-') && !line.startsWith('\\')) return [];
+    }
   }
-  const startLine = Number(match[1]);
-  if (!code.length || code.length > Number(match[2] ?? 1)) return null;
-  const content = code.join('\n');
-  if (source.content.split('\n').slice(startLine - 1, startLine - 1 + code.length).join('\n') !== content) return null;
-  return {
-    path: comment.path, fingerprint: source.fingerprint, source: source.content, content, startLine, endLine: startLine + code.length - 1,
-    createdAt: Date.parse(comment.createdAt),
-  };
+  if (windows.some(window => window.lines.length > window.count || (window.startLine < 1 && window.lines.length))) return [];
+  return windows.map(({ startLine, lines }) => ({ startLine, lines }));
 }
 
-function sameCapturedStage(a, b) {
-  return a.path !== b.path || a.fingerprint === b.fingerprint ||
-    a.endLine < b.startLine || b.endLine < a.startLine ||
-    a.source.includes(b.content) || b.source.includes(a.content) ||
-    a.createdAt === b.createdAt;
+function differentCapturedCode(left, right) {
+  if (left.fingerprint && right.fingerprint) return left.fingerprint !== right.fingerprint;
+  for (const x of left.windows) for (const y of right.windows) {
+    const start = Math.max(x.startLine, y.startLine);
+    const end = Math.min(x.startLine + x.lines.length, y.startLine + y.lines.length);
+    for (let line = start; line < end; line++) {
+      if (x.lines[line - x.startLine] !== y.lines[line - y.startLine]) return true;
+    }
+  }
+  return false;
+}
+
+function capturedStages(context) {
+  const filesByRef = new Map();
+  const filesByPath = new Map();
+  const add = (ref, path, file) => {
+    if (!filesByRef.has(ref)) filesByRef.set(ref, new Map());
+    const files = filesByRef.get(ref);
+    if (!files.has(path)) files.set(path, file);
+    if (!filesByPath.has(path)) filesByPath.set(path, new Set());
+    filesByPath.get(path).add(file);
+  };
+  for (const source of context.sources) {
+    if (typeof source.content !== 'string') continue;
+    const file = { fingerprint: source.fingerprint, windows: [{ startLine: 1, lines: source.content.split('\n') }] };
+    for (const ref of source.refs) add(ref, source.path, file);
+  }
+  for (const change of context.changes) {
+    const windows = patchWindows(change.patch);
+    if (!windows.length) continue;
+    const file = { windows };
+    for (const ref of change.refs) add(ref === context.url ? context.headSha : ref, change.path, file);
+  }
+  const hasComparableChange = [...filesByPath.values()].some(files => {
+    const versions = [...files];
+    return versions.some((file, index) => versions.slice(0, index).some(other => differentCapturedCode(file, other)));
+  });
+  return new Map([...filesByRef].map(([ref, files]) => [ref, {
+    hasComparableChange, fingerprint: hash([...files].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => [path, file.fingerprint ?? file.windows])),
+  }]));
+}
+
+function capturedAnchor(context, comment, stages) {
+  if (!comment.path || !comment.originalCommitId) return null;
+  const source = context.sources.find(source => source.path === comment.path && source.refs.includes(comment.originalCommitId) && typeof source.content === 'string');
+  if (!source) return null;
+  const windows = patchWindows(comment.diffHunk);
+  if (windows.length !== 1) return null;
+  const { startLine, lines } = windows[0];
+  if (startLine < 1 || !lines.length || source.content.split('\n').slice(startLine - 1, startLine - 1 + lines.length).join('\n') !== lines.join('\n')) return null;
+  return { path: comment.path, stage: stages.get(comment.originalCommitId), startLine, endLine: startLine + lines.length - 1, createdAt: Date.parse(comment.createdAt) };
+}
+
+function compareCapturedStages(a, b) {
+  if (a.path !== b.path) return null;
+  if (a.createdAt === b.createdAt) return a.stage.fingerprint === b.stage.fingerprint ? 'same' : null;
+  // The original anchor may remain old on a fresh reply. Comparable PR code
+  // permits model-supported lineage, never an invented current-stage binding.
+  return a.stage.hasComparableChange ? 'possible' : null;
 }
 
 function overlappingOccurrences(left, right, occurrences) {
   let overlap = false;
+  let separationPossible = false;
   const checked = new Set();
   for (const id of left.commentIds) {
     const { thread } = occurrences.get(id);
@@ -330,12 +380,13 @@ function overlappingOccurrences(left, right, occurrences) {
     if (!rightMembers.length) continue;
     const leftAnchors = leftMembers.map(member => member.anchor).filter(anchor => anchor && Number.isFinite(anchor.createdAt));
     const rightAnchors = rightMembers.map(member => member.anchor).filter(anchor => anchor && Number.isFinite(anchor.createdAt));
-    // Unknown-only feedback attaches once, but never overrides a corroborated
-    // distinction already supported by another pair of members.
-    if (leftAnchors.some(a => rightAnchors.some(b => !sameCapturedStage(a, b)))) return false;
+    // Equal-time, equal observed stages take priority in model-mixed incidents.
+    // Original-ref equality alone cannot certify a reply's current state.
+    if (leftAnchors.some(a => rightAnchors.some(b => compareCapturedStages(a, b) === 'same'))) return true;
+    if (leftAnchors.some(a => rightAnchors.some(b => compareCapturedStages(a, b) === 'possible'))) separationPossible = true;
     overlap = true;
   }
-  return overlap;
+  return overlap && !separationPossible;
 }
 
 function applyConsolidation(response, catalog, batch, processed, occurrences) {
@@ -416,8 +467,8 @@ function buildGroups(response, eligible, occurrences) {
       }
       return { commentIds: [...incident.commentIds].sort(), explanation: incident.explanation.trim() };
     }).sort((a, b) => a.commentIds[0].localeCompare(b.commentIds[0]));
-    // Unverifiable/unchanged same-thread anchors collapse even when the model
-    // splits them. A corroborated code change only removes this upper bound.
+    // Comparable captured artifacts only bound possible stages, not semantic
+    // repair relevance; an unchanged caller is not the whole causal state.
     const merged = [];
     for (const incident of incidents) {
       for (let index = 0; index < merged.length;) {
@@ -526,6 +577,7 @@ export async function analyzeCapture(capture, { runAgent, previous = null, maxIn
   for (const pr of capture.pullRequests) {
     if (!Number.isSafeInteger(pr.number) || !Array.isArray(pr.comments) || !Array.isArray(pr.commits) || !Array.isArray(pr.files)) fail('invalid captured PR');
     const context = consolidationArtifacts(pr);
+    const stages = capturedStages(context);
     prContexts.set(pr.number, context);
     const contextHash = hash({ promptVersion: PROMPT_VERSION, repository: capture.repository, pr });
     for (const comment of pr.comments) {
@@ -533,7 +585,7 @@ export async function analyzeCapture(capture, { runAgent, previous = null, maxIn
       text(comment.threadId, 'captured thread ID');
       if (ids.has(comment.id)) fail('duplicate captured comment ID');
       ids.add(comment.id);
-      occurrences.set(comment.id, { thread: `${pr.number}:${comment.threadId}`, anchor: capturedAnchor(context, comment) });
+      occurrences.set(comment.id, { thread: `${pr.number}:${comment.threadId}`, anchor: capturedAnchor(context, comment, stages) });
       const inputHash = hash({ contextHash, commentId: comment.id });
       entries.push({ pr, comment, inputHash });
     }

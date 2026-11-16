@@ -322,17 +322,138 @@ test('fresh same-thread feedback after a captured partial repair promotes at two
   assert.doesNotMatch(published, /independent incidents/);
 });
 
-test('same-thread new SHAs, unrelated changes and unverifiable chronology never manufacture another occurrence', async () => {
+test('additive repair retaining the original return still permits fresh feedback on the remaining null failure', async () => {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  const partial = 'if (input === undefined) return undefined;\nreturn input.value;';
+  const hunk = `@@ -1 +1,2 @@\n-${pr.sources[0].content}\n+${partial.split('\n').join('\n+')}`;
+  pr.sources[2].content = partial;
+  pr.commits[0].files[0].patch = hunk;
+  pr.commits[1].files[0].patch = `@@ -1,2 +1 @@\n-${partial.split('\n').join('\n-')}\n+${pr.sources[1].content}`;
+  pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = hunk; });
+  const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+  assert.equal(result.groups[0].incidents.length, 2);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.rules[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
+});
+
+function mixedStageCapture(acrossBoundary = false) {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  const a = pr.comments[0];
+  const b = pr.comments[1];
+  pr.comments = [
+    { ...a, id: 'inline:1:00' }, { ...b, id: 'inline:1:01' },
+    { ...a, id: 'inline:1:80' }, { ...b, id: 'inline:1:81' },
+  ];
+  if (acrossBoundary) pr.comments.push(...Array.from({ length: 14 }, (_, index) => ({
+    ...a, id: `inline:1:${String(index + 2).padStart(2, '0')}`,
+  })));
+  return input;
+}
+
+test('mixed captured stages cannot preserve extra incidents that duplicate either known stage', async () => {
+  const input = mixedStageCapture();
+  const agent = fixtureAgent({
+    classify: pr => repairClassification(pr, { commentId: 'inline:1:00' }),
+    consolidate: data => groupFor(data.findings, [['inline:1:00', 'inline:1:01'], ['inline:1:80'], ['inline:1:81']]),
+  });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(result.groups[0].incidents.length, 1, 'exact-stage overlap conservatively joins the model-mixed incident, never inflating recurrence');
+  assert.deepEqual(result.groups[0].incidents[0].commentIds, idsOf(result));
+  assert.deepEqual(result.rules, []);
+});
+
+test('mixed captured stages deduplicate after existingIncidentIndex append across the batch boundary and resume', async () => {
+  const input = mixedStageCapture(true);
+  let checkpoint;
+  const agent = fixtureAgent({
+    classify: pr => repairClassification(pr, { commentId: 'inline:1:00' }),
+    consolidate: data => {
+      const response = groupFor(data.findings, data.catalog.length ? undefined : [data.findings.map(finding => finding.commentId)], data.catalog);
+      if (data.catalog.length) response.groups[0].incidents[0].existingIncidentIndex = 0;
+      return response;
+    },
+  });
+  const result = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { checkpoint = state; } });
+  assert.deepEqual(agent.calls.filter(call => !call.data.targets).map(call => call.data.findings.length), [16, 2]);
+  assert.equal(result.groups[0].incidents.length, 1);
+  assert.deepEqual(result.rules, []);
+  const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
+  assert.deepEqual(resumed.groups, result.groups);
+});
+
+test('fresh same-thread repair in a delegated file is not erased by an unchanged commented caller', async () => {
+  const input = capture([2]);
+  const pr = input.pullRequests[0];
+  const initial = '1'.repeat(40);
+  const partial = '2'.repeat(40);
+  const final = '3'.repeat(40);
+  const caller = "import { titleFor } from './policy.js';\nexport const renderTitle = status => titleFor(status);";
+  const before = "export function titleFor(status) { return 'Rejected'; }";
+  const attempted = "export function titleFor(status) { return status === 200 ? 'Placed' : 'Rejected'; }";
+  const accepted = "export function titleFor(status) { return status === 200 ? 'Placed' : status === 502 ? 'Unknown' : 'Rejected'; }";
+  const file = (before, after, status = 'modified') => ({
+    path: 'policy.js', previousPath: null, status,
+    patch: `@@ -${before ? '1' : '0,0'} +1 @@\n${before ? `-${before}\n` : ''}+${after}`,
+  });
+  const callerFile = { path: 'caller.js', previousPath: null, status: 'added', patch: `@@ -0,0 +1,2 @@\n+${caller.split('\n').join('\n+')}` };
+  pr.baseSha = '0'.repeat(40);
+  pr.headSha = final;
+  pr.commits = [
+    { sha: initial, message: 'Introduce the caller and policy', authoredAt: '2026-01-01T00:00:00Z', files: [callerFile, file(null, before, 'added')], limitations: [] },
+    { sha: partial, message: 'Attempt outcome-specific titles', authoredAt: '2026-01-01T02:00:00Z', files: [file(before, attempted)], limitations: [] },
+    { sha: final, message: 'Distinguish uncertain upstream outcomes', authoredAt: '2026-01-01T04:00:00Z', files: [file(attempted, accepted)], limitations: [] },
+  ];
+  pr.files = [callerFile, file(null, accepted, 'added')];
+  pr.sources = [initial, partial, final].map(ref => ({ path: 'caller.js', ref, content: caller, unavailableReason: null }));
+  pr.comments.forEach((comment, index) => Object.assign(comment, {
+    path: 'caller.js', threadId: 'one-title-review', originalCommitId: index ? partial : initial,
+    createdAt: `2026-01-01T0${index ? 3 : 1}:00:00Z`, diffHunk: callerFile.patch,
+    body: index ? `After ${partial}, 200 now says Placed but 502 still says Rejected. The remaining problem is in the delegated title policy; preserve Rejected for definitely-not-sent403.` :
+      'The caller displays Rejected even for a successful200 result; its delegated title policy must reflect the outcome.',
+  }));
+  const cause = 'Using a rejected-result title for other order outcomes';
+  const prevention = 'Choose result titles from the actual outcome while preserving definitely-not-sent rejection.';
+  const agent = fixtureAgent({
+    classify: () => ({
+      ...confirmed(pr), rootCause: cause, prevention, resolution: 'The final delegated policy distinguishes placed, uncertain and definitely-not-sent outcomes.',
+      evidence: [final], codeEvidence: [{ ref: final, path: 'policy.js', quote: `+${accepted}` }],
+    }),
+    consolidate: data => ({ groups: [{
+      existingGroupIndex: null, rootCause: cause, prevention,
+      incidents: [data.findings.slice(0, 1), data.findings.slice(1)].map(findings => ({ existingIncidentIndex: null, commentIds: findings.map(finding => finding.commentId), explanation: 'The captured partial policy change followed the first review; fresh feedback identifies the remaining502 error, and the final policy supplies Unknown without rejecting the accepted403 fallback. Duplicate reports of that partial policy stay together.' })),
+    }] }),
+  });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(result.groups[0].incidents.length, 2);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.equal(agent.calls.length, 2);
+  pr.comments[1].originalCommitId = initial;
+  pr.comments.push({ ...pr.comments[1], id: 'inline:1:3', body: 'Duplicate of the same remaining502 failure after the referenced partial policy commit; no further attempted repair.' });
+  let checkpoint;
+  const staleAnchor = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { checkpoint = state; } });
+  assert.equal(staleAnchor.groups[0].incidents.length, 2, 'a stale original caller anchor is not the current reviewed policy stage');
+  assert.deepEqual(staleAnchor.groups[0].incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), [['inline:1:1'], ['inline:1:2', 'inline:1:3']]);
+  assert.equal(agent.calls.length, 4);
+  const resumed = await analyzeCapture(input, { previous: staleAnchor, loadConsolidation: async () => checkpoint });
+  assert.deepEqual(resumed.groups, staleAnchor.groups);
+  const readmeFile = { path: 'README.md', previousPath: null, status: 'added', patch: '@@ -0,0 +1 @@\n+# Documentation only' };
+  pr.commits = [{ ...pr.commits[1], message: 'Documentation only', files: [readmeFile] }, pr.commits[2]];
+  pr.files.push(readmeFile);
+  pr.limitations = ['Earlier policy versions are not available in the captured commit history.'];
+  pr.comments.slice(1).forEach(comment => Object.assign(comment, {
+    originalCommitId: partial,
+    body: 'The newer SHA changes only documentation. This reproduces the same original failure, with no evidenced relevant attempted repair.',
+  }));
+  const sameObservedCode = await analyzeCapture(input, agent);
+  assert.equal(sameObservedCode.candidates[0].incidents.length, 1, 'identical observed caller versions and no differing comparable policy state cannot manufacture a repair');
+  assert.deepEqual(sameObservedCode.rules, []);
+  assert.equal(agent.calls.length, 6);
+});
+
+test('unverifiable same-thread code or chronology cannot manufacture another occurrence', async () => {
   const controls = [
-    pr => {
-      pr.sources[2].content = pr.sources[0].content;
-      pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = pr.comments[0].diffHunk; });
-      pr.commits[0].files = [{ path: 'README.md', patch: '@@ -0,0 +1 @@\n+# Documentation' }];
-    },
-    pr => {
-      pr.sources[2].content = `${pr.sources[0].content}\n// Unrelated metadata change`;
-      pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = pr.comments[0].diffHunk; });
-    },
     pr => { pr.sources[2].content = null; pr.sources[2].unavailableReason = 'Not available'; },
     pr => { pr.comments.slice(1, 3).forEach(comment => { comment.originalCommitId = pr.baseSha; }); },
     pr => { pr.comments.slice(1, 3).forEach(comment => { comment.createdAt = null; }); },
@@ -346,6 +467,56 @@ test('same-thread new SHAs, unrelated changes and unverifiable chronology never 
     assert.deepEqual(result.rules, []);
     assert.equal(result.candidates[0].incidents.length, 1);
     assert.deepEqual(result.candidates[0].incidents[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
+  }
+});
+
+test('unchanged observed code at new SHAs stays one without treating metadata as an attempted repair', async () => {
+  for (const files of [[], [{ path: 'README.md', previousPath: null, status: 'added', patch: '@@ -0,0 +1 @@\n+# Documentation' }]]) {
+    const input = failedRepairCapture();
+    const pr = input.pullRequests[0];
+    pr.sources[2].content = pr.sources[0].content;
+    pr.comments.slice(1, 3).forEach(comment => Object.assign(comment, {
+      diffHunk: pr.comments[0].diffHunk,
+      body: 'The new SHA has no relevant input repair. This is the unchanged original failure, not a failed repair.',
+    }));
+    pr.commits[0].files = files;
+    const agent = fixtureAgent({
+      classify: repairClassification,
+      consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)]),
+    });
+    const result = await analyzeCapture(input, agent);
+    assert.deepEqual(result.rules, []);
+    assert.equal(result.candidates[0].incidents.length, 1);
+    assert.deepEqual(result.candidates[0].incidents[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
+  }
+});
+
+test('unchanged failure with unrelated same-file or delegated-file edits remains one model-judged occurrence', async () => {
+  for (const path of ['input.js', 'metadata.js']) {
+    const input = failedRepairCapture();
+    const pr = input.pullRequests[0];
+    const before = pr.sources[0].content;
+    const unrelated = `${before}\n// Update audit metadata only`;
+    pr.sources[2].content = path === 'input.js' ? unrelated : before;
+    pr.commits[0].files = [{ path, previousPath: null, status: 'modified', patch: `@@ -1 +1,2 @@\n-${before}\n+${unrelated.split('\n').join('\n+')}` }];
+    if (path !== 'input.js') pr.commits.push({
+      sha: pr.baseSha, message: 'Original metadata helper', authoredAt: '2026-01-01T00:00:00Z',
+      files: [{ path, previousPath: null, status: 'added', patch: `@@ -0,0 +1 @@\n+${before}` }], limitations: [],
+    });
+    for (const comment of pr.comments.slice(1, 3)) Object.assign(comment, {
+      diffHunk: pr.comments[0].diffHunk,
+      body: 'The metadata-only edit did not attempt the absent-input repair. This is another reproduction of the same unchanged null/undefined dereference, not a new failed repair.',
+    });
+    const agent = fixtureAgent({
+      classify: repairClassification,
+      consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)]),
+    });
+    const result = await analyzeCapture(input, agent);
+    assert.equal(result.candidates[0].incidents.length, 1);
+    assert.deepEqual(result.rules, []);
+    const context = agent.calls.find(call => !call.data.targets).data;
+    assert.ok(context.pullRequests[0].changes.some(change => change.path === path && change.refs.includes('2'.repeat(40))));
+    assert.match(context.comments.find(comment => comment.commentId === 'inline:1:2').body, /metadata-only edit did not attempt/);
   }
 });
 
