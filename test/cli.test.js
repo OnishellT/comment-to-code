@@ -77,11 +77,21 @@ function fixtureAgent({ beforeBatch, consolidate } = {}) {
         }) });
       }
       consolidations.push(data);
-      return JSON.stringify(consolidate ? await consolidate(data) : { groups: [{
+      if (consolidate) return JSON.stringify(await consolidate(data));
+      // reviewedHistory repeats one observed defect per PR; assign duplicate memberships explicitly.
+      const incidents = [...new Set(data.findings.map(finding => finding.prNumber))].map(prNumber => {
+        const existing = data.catalog[0]?.incidents.findIndex(incident => incident.findings.some(finding => finding.prNumber === prNumber)) ?? -1;
+        return {
+          existingIncidentIndex: existing < 0 ? null : existing,
+          commentIds: data.findings.filter(finding => finding.prNumber === prNumber).map(finding => finding.commentId),
+          explanation: 'Optional chaining guards absence for this observed absent-input defect.',
+        };
+      });
+      return JSON.stringify({ groups: [{
         existingGroupIndex: data.catalog.length ? 0 : null,
         rootCause: data.catalog.length ? null : 'Dereferencing optional input without an absence guard',
         prevention: data.catalog.length ? null : 'Guard optional inputs before dereferencing them.',
-        incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'Optional chaining guards absence for this observed absent-input defect.' })),
+        incidents,
       }] });
     },
   };
