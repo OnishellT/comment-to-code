@@ -2,12 +2,14 @@
 
 ## Scope and success
 
-A user inside a local GitHub checkout can install comment-to-code and its agent skill, capture all accessible PR discussion/review history, analyze every comment with OMP/Claude Code/Codex, and generate a small evidence-backed rules.md plus non-destructive AGENTS.md/CLAUDE.md references. Promotion requires two independent incidents with the same verified root cause. No gates/hooks.
+Issue31 implementation follows ADR0009: version2 comment envelopes with independent literal-evidenced claims, application-owned content IDs, claim-ID partitions and original-comment recurrence coalescing. Classification uses causal-claims-v7; prior v6/analysis/consolidation formats are incompatible and never migrated. Persist only comments, derive findings, preserve whole-batch validation and one complete citation correction. Full npm consumer verification and native syntax follow implementation; real providers remain parent-owned.
+
+A user inside a local GitHub checkout can install comment-to-code and its agent skill, capture all accessible PR discussion/review history, analyze every comment with OMP/Claude Code/Codex, and generate a small evidence-backed rules.md plus non-destructive AGENTS.md/CLAUDE.md references. Promotion requires two supported mistake occurrences with the same verified root cause: independent original defects or fresh substantive feedback after an evidenced relevant failed repair. No gates/hooks.
 
 ## Feature issues / independent ownership
 
 1. Capture GitHub evidence: src/capture.js and test/capture.test.js. Own pagination, identity, lifecycle metadata, comments/reviews/replies, commits/patches, reviewed/final code, explicit context limitations. No CLI/analysis changes.
-2. Analyze causes and publish rules: src/analyze.js, src/publish.js, test/analyze.test.js, test/publish.test.js. Own validated comment classifications, root-cause consolidation, independent-incident threshold, candidates, managed Markdown blocks. No capture/runtime changes.
+2. Analyze causes and publish rules: src/analyze.js, src/publish.js, test/analyze.test.js, test/publish.test.js. Own validated comment classifications, root-cause consolidation, two-supported-occurrence threshold, candidates, managed Markdown blocks. No capture/runtime changes.
 3. Installable CLI and isolated agent runners: package.json, bin/, src/agent.js, src/cli.js, src/install.js, install.sh, test/agent.test.js, test/cli.test.js, test/install.test.js, README.md. Own adapters, persistence, commands, project-local skills, installer, public documentation. No capture/analyze/publish changes.
 
 These bounded slices implement one end-to-end feature PR on a new main-based worktree. The parent owns integration, .github/workflows/test.yml, docs, and final smoke verification. All issues are linked from the PR. Implementers verify their completed slices once; the parent verifies the integrated application once and reruns only a failed check after a justified fix.
@@ -40,17 +42,17 @@ ESM named exports; standard library only. Every async operation throws actionabl
 
 `runAgent(prompt: string) -> Promise<string>` returns model response text containing a single JSON object, optionally one enclosing Markdown code fence. analyze.js owns prompts and validation; runner owns process isolation and model invocation. No agent calls for empty captures. Use content-based cache keys including relevant PR context and prompt/schema version; never cache just by comment ID.
 
-`Analysis = { version: 1, repository, analyzedAt, findings: Finding[], groups: Group[], rules: Rule[], candidates: Group[], stats: { comments, analyzed, cached, rules, candidates } }`.
+`Analysis = { version: 2, repository, analyzedAt, comments: CommentCheckpoint[], groups: Group[], rules: Rule[], candidates: Group[], stats: { comments, analyzed, cached, findings, eligible, rules, candidates } }`.
 
-`Finding = { commentId, prNumber, category, rootCause: string|null, prevention: string|null, resolution: string|null, evidence: string[], confidence: 'high'|'medium'|'low', status: 'confirmed'|'unresolved'|'ignored', inputHash: string }`.
+`CommentCheckpoint = { version: 2, commentId, prNumber, inputHash, claims: Claim[] }`; nonempty claims, one envelope per original comment. `Claim = { id, excerpt: string|null, category, rootCause, prevention, resolution, evidence, confidence, status, outcome, codeEvidence }`. Nullable causal text remains null when unsupported. `findingsFor(analysis)` derives flattened claims with parent metadata, never a second persisted truth.
 
-Evidence references must resolve to captured comment URLs, PR URLs, or commit SHAs; confirmed findings require actual captured fix/code evidence, not merely a model assertion or thread-resolution flag. Non-actionable and unresolved comments remain explicit findings. Every captured comment appears exactly once. The model must distinguish rejected/outdated suggestions from verified fixes. A closed unmerged PR is not proof of a fix; open unresolved comments cannot support confirmed rules without observed changes.
+Evidence references resolve only within the target PR. Each technical excerpt is a literal target-comment substring; null excerpts account only for empty nontechnical comments. Each claim independently owns its fix/rejection/uncertain outcome and literal citations. Hash the parent identity and validated canonical content for app-owned claim IDs; sort unordered references/citations without altering bytes and reject duplicates/collisions. Revalidate checkpoint proof against actual capture on reuse. Whole-batch structural/ownership/excerpt/disposition checks precede save or one full-replacement citation correction, which cannot drop technical siblings. Complete literal changed lines are required, including genuine empty changed lines.
 
-`Group = { id, rootCause, prevention, incidents: { id, commentIds: string[], explanation: string }[] }`.
+`Group = { id, rootCause, prevention, incidents: { id, claimIds: string[], explanation: string }[] }`.
 
 `Rule = { id, rootCause, instruction, incidentCount, commentIds: string[], evidence: string[] }`.
 
-The consolidation pass partitions all eligible findings exactly once into root-cause groups and independent incidents; no invented/reused comment IDs. A review thread counts at most once per group, even if the model returns several incidents. Collapse overlapping incidents before applying threshold. Stable IDs derived from normalized content, deterministic ordering. Invalid/omitted/unknown/duplicate references fail analysis without publication. Prior groups are not an additional source of incidents; rerun consolidation on current validated findings so reruns cannot inflate counts.
+Consolidation partitions all eligible claim IDs exactly once, at most16 per delta. In each group, coalesce incidents transitively by shared original comment identity so facets cannot manufacture recurrence across batches/resume/publication; different groups can share a comment. Rules deduplicate original comment IDs/references. Model assignments and snapshot joins otherwise own evidenced failed-repair lineage; no PR/thread/time/anchor/hash veto. Preserve paired invariant refinement and accepted alternatives. Completed catalog members carry own literal excerpts, causal proof, outcomes/citations and provenance; active PRs retain complete available artifacts and ALL captured commentary, including noneligible inline context and rejected alternatives regardless of thread or link form. Context-only commentary is not an extra finding or occurrence. Label projection separately from unavailable capture. Classification causal-claims-v7 and analysis/consolidation version2 reject incompatible old objects without migration. Persist comment envelopes through loadComment/saveComments in comments/<inputHash>.json. Earlier implementation sections below record historical versions, superseded by ADR0009 where incompatible.
 
 ### publish.js
 
@@ -75,7 +77,7 @@ Local .comment-to-code data must not become tracked accidentally: installer/firs
 ## Acceptance / real verification
 
 - Paginated offline transport fixtures exercise all PR states, all three comment kinds, replies, commit patches, unavailable code, and GitHub API limits/errors. No silent omission.
-- Analysis fixtures prove every-comment accounting, two independent incidents → one rule, one incident/replies → candidate, distinct defects within one PR, evidence validation, cache invalidation, malformed output, uncertain/rejected fixes, and no duplicate rules on rerun.
+- Analysis fixtures prove every-comment accounting, two supported occurrences → one rule, one occurrence/unchanged replies → candidate, independent original defects within one PR, evidenced fresh failed repairs, duplicate post-attempt reviews, conservative unknown lineage, evidence validation, cache invalidation, malformed output, uncertain/rejected fixes, and no duplicate rules on rerun.
 - Publication preserves user text, is idempotent, rejects malformed markers and symlinks before writes.
 - Each adapter is exercised through real subprocess execution against a fixture executable with exact stdin/output protocol; at least one real installed agent analyzes a small reviewed-code fixture end-to-end. Never call fake fixtures real model verification.
 - Installed package smoke in a temporary checkout: install skills for all three agents, invoke --help, capture a real GitHub project, run an actual model analysis scenario, inspect generated files. No tests asserting source text/wiring only.
@@ -146,3 +148,54 @@ Native Codex human output echoes the complete prompt to stderr, crossing the exi
 - Add a behavioral regression for a full input larger than the stderr bound and exact final-response extraction, plus independent oversized-stderr rejection. Observe the large-input regression fail before changing the adapter.
 - No truncation, diagnostic discarding, raised limits, fallback, new configuration, or cache-epoch change. This changes transport formatting, not the classifier/evidence contract.
 - Run focused adapter checks, install a separate artifact and resume the unchanged complete captures. Passing the subprocess boundary is not complete-history success. Require independent review and green CI before merge.
+
+## Issue #16: Causal mechanisms instead of topic buckets
+
+ADR 0003 governs this correction. A complete real analysis structurally passed but mixed unrelated identifier, dependency and type-safety mechanisms, and combined index, foreign-key and migration defects. A concrete causal-separation assertion is red; preserve the unendorsed output.
+
+1. Strengthen only consolidatePrompt: one failure mechanism and a preventive intervention shared by every grouped incident. Partitioning all findings must allow singleton candidates. Prefer causal correctness over a low rule count; merge synonyms, not topic-wide checklists.
+2. Extend scripts/smoke-agent.js, reusing its capture/publication helpers: retain optional-collection recurrence and praise, add two independent index-access defects plus unrelated singleton foreign-key and lifecycle-migration defects. Assert membership, exact independent counts and candidacy without pinning wording.
+3. Keep classification, schemas, evidence validation, v6 finding hashes, thread/incident protections, thresholds and publication unchanged. No heuristic semantic gate, second judge pipeline, post-hoc rule editing, dependency or provider retry.
+4. Delegate analyzer/smoke implementation in this main-based worktree; parent owns ADR/plan/progress, integration, installed complete-capture replay and final judgment. Independent read-only review examines the preserved bad consolidation while implementation proceeds.
+5. Run focused checks and one real native smoke after implementation. Install separately and re-consolidate the complete unchanged capture with every finding reused. Judge resulting rules, then request contextual PR review and green CI before scoped merge. The nine-file customer task remains open until all three histories complete and resulting documents are shown honestly.
+
+## Issue19 — explicit bounded analysis deadlines
+
+The real complete-history causal replay timed out after five minutes. Add `--agent-timeout-ms N` to analysis commands, forwarding to the existing adapter deadline with unchanged default, isolation, byte limits and v6 finding hashes. Validate positive integer Node timer bounds before execution. Verify through the actual CLI and a timed fixture subprocess: short deadline aborts without replacing prior artifacts/checkpointing incomplete work; sufficient deadline completes classification/consolidation. Document units and scope. Install the candidate and repeat the unchanged full-history replay with an explicit fifteen-minute bound before approving PR17.
+
+## Issue16 follow-through — respect observed resolutions
+
+The complete raw146-group audit finds systematic mismatches beyond a duplicate placeholder. Ground each mechanism/intervention in every constituent's observed resolution, preserve accepted alternative remedies, split incident-specific/opposite safeguards and reconcile genuinely synonymous cores. Add one same-PR/file simulator counterexample to the existing native smoke: independent partial-fill scaling and fault cleanup stay singleton candidates. Run focused checks and parse the extended smoke; native nine-comment and complete-history verification must wait for the explicitly observed provider reset. Keep strict rejection, all evidence and v6 findings; no unchanged native retry or hand-repaired documents.
+
+## Issue21 — bounded, resumable causal consolidation
+
+The post-reset native nine-comment scenario passed, but the complete609-finding call emitted partial JSON and an interactive question rather than a finished partition. The native envelope reports ordinary completion, not truncation. Replaying that captured result through the real analyzer deterministically reproduces rejection; strict parsing is correct.
+
+Replace one-shot global output with sequential batches of at most16eligible findings against a complete causal catalog. Snapshot-index assignments preserve existing preventive invariants, join same defects and append independent incidents. Validate an entire batch before applying/checkpointing; canonical thread collapse and final complete coverage remain mandatory. Keep v6 findings, use a separate consolidation policy/input fingerprint and CLI-owned private atomic state, resume only validated prefixes, and never publish partial work. ADR0005 records the design and acceptance checks. Implementation is delegated in a new main-based worktree carrying PR17's owned dependency; no merge or full-history semantic endorsement yet.
+
+## Issue23 — integrated bounded citation producer
+
+Integrate PR22's owned80540d7 with PR20's artifact-coupled citation guidance and ADR0004 in a new main-based Worktrunk worktree; original worktrees and main stay untouched. Retain all21native smoke comments, two recurring rules, four unrelated singletons and the same-thread join across the16-finding boundary. Reconcile the helper with base/fix/unrelated-head SHAs numbered3n/3n+1/3n+2, the actual fix patch under fix, only README under head, and consistent reviewed/head sources. Assert these contexts reach actual classification and that consolidation receives its native schema.
+
+Keep schemas, validators, v6 finding hashes, timeout controls and the immutable-catalog policy unchanged. The immutable invariant remains a known limitation, not corrected here. Run relevant checks once after edits and one native Claude Sonnet21case smoke. Record a separately packed/installed artifact's source commit, tar SHA and version; hand its executable to the parent for the complete Pi resume without starting that run. Open a draft PR linked to issues18/21/23; no merge, complete-history acceptance or root-quality conclusion follows from synthetic verification.
+
+## Issue25 — revisable causal invariants
+
+ADR0006 supersedes only the immutable-text part of ADR0005. In a new main-based Worktrunk branch, explicitly fast-forward owned dependency e0f55df9c998e79bced668c1e1fba1deec5f7627. Permit a referenced group's cause/prevention to inherit as null/null or be replaced as two nonempty marker-free strings; reject partial/blank/marker pairs before clone/save. Keep every old membership, snapshot reference, exact current coverage, canonicalization, privacy protection, independent-incident threshold, schema and provider flag unchanged.
+
+Require one minimal preventive core supported by ALL old and new observed resolutions; refine a false case-specific hypothesis rather than append incident-specific clauses or generalize to a topic. No old-group repartition, explanation rewrite, second judge, repair or runtime gate. The actual instruction fingerprint naturally invalidates old consolidation policy state; unchanged v6 findings remain reusable.
+
+Consumer checks cover paired refinement across the16boundary, retained old members, independent recurrence, correctly scoped publication and invalid-pair atomicity/resume. Extend the native fixture to23comments/22eligible: early session-refresh and late render-cache atomic generation-check-and-write defects add a third recurring mechanism; retain optional14IDs/13defects, index2defects, four singleton causes, praise exclusion, unrelated-head citation history, human preservation and zero-call repeat. Move the pre-fix same-thread reproduction to26/2600 to preserve the boundary.
+
+Run focused checks once after edits, read the selective diff and open a draft PR closing25 with explicit blocked native/full-history acceptance. Do not call providers before the reported2026-11-16T02:30Z reset. Parent owns source-frozen native execution, separate installation, complete histories and causal review; no5/5or merge while any remain unverified.
+
+## Issue29 — evidenced failed-repair recurrence
+
+ADR0008 records the owner's explicit count_failed_repairs decision. It supersedes the earlier independent-original-defects-only convention, not causal cohesion, accepted-fix evidence or threshold2. Supply original current/catalog member chronology and relevant noneligible thread/review context with deduplicated shared source/patch tables. Keep capture and normalized finding schemas, v6 hashes, citation feedback, privacy, resource limits, exact coverage, snapshot references and paired refinement unchanged. New grouping instructions/context naturally restart stale grouping state; never rehash old experiments.
+
+Per-call full source/patch payload belongs only to PRs in the current delta; keep all earlier/current captured artifacts within those PRs, including cross-file/pathless evidence. Retain all old member original causes, preventions, resolutions, evidence and comment chronology in the catalog, not old PR code. Complete grouping input identity remains batch-independent without inferring causal stages. This is consolidation of previously validated findings, not repeated full-code review. If active-PR complete evidence plus complete catalog/comments exceeds the existing explicit budget, fail before the call rather than truncate or assume the adapter's16MiB byte ceiling is model capacity.
+
+Consumer checks preserve model-assigned same-thread repair lineage and duplicate memberships through equal timestamps, retained original anchors, additive/disjoint delegated repairs, incomplete metadata, existingIncidentIndex append, cross-batch snapshot references and zero-call resume. Negative unchanged/new-SHA/unrelated examples remain one under the supplied semantic assignment, not a mocked split-then-clamp guarantee. Preserve all23 native cases and26/2600 boundary; the4 new title-repair comments use an unchanged newly added caller, actual before/partial/final delegated-policy patches, caller-only original/head snapshots and an explicitly retained old reply anchor. Keep27 total/25 eligible, four recurring mechanisms and four unrelated singleton candidates. Real native judgment must join duplicate inline/review feedback, exclude the acknowledgement and retain the accepted definitely-not-sent fallback.
+
+Run focused repository checks once after all changes, then open a draft PR closing29. Parent owns frozen native generation/installation, complete-history replay and independent actual review. Historical53 proposals require fresh judgment under the approved recurrence criterion; this policy change does not correct or endorse every proposal. No provider calls or main merge in this slice.
+
