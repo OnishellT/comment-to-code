@@ -38,9 +38,9 @@ function evidenceLink(reference, repository) {
 function render(analysis) {
   if (typeof analysis.repository.url !== 'string') throw new Error('Cannot publish: repository URL is required');
   const lines = ['## Learned prevention rules', ''];
-  if (!analysis.rules.length) lines.push('No prevention rules have reached two independent verified incidents.');
+  if (!analysis.rules.length) lines.push('No prevention rules have reached two verified mistake occurrences.');
   for (const rule of [...analysis.rules].sort((a, b) => a.id.localeCompare(b.id))) {
-    lines.push(`- **${markdown(rule.id)}**: ${markdown(rule.instruction)} (${rule.incidentCount} independent incidents).`);
+    lines.push(`- **${markdown(rule.id)}**: ${markdown(rule.instruction)} (${rule.incidentCount} verified mistake occurrences).`);
     lines.push(`  Evidence: ${rule.evidence.map(reference => evidenceLink(reference, analysis.repository)).join(', ')}.`);
   }
   return lines.join('\n');

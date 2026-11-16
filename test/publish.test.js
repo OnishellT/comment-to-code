@@ -37,7 +37,7 @@ async function analysis(count = 2) {
       resolution: 'Added an explicit guard.', evidence: ['b'.repeat(40), data.pullRequests[0].comments.find(comment => comment.id === target.commentId).url],
       confidence: 'high', status: 'confirmed', outcome: 'verified-fix', codeEvidence: [{ ref: 'b'.repeat(40), path: 'input.js', quote: '+if (value) read(value);' }],
     })) });
-    return JSON.stringify({ groups: [{ rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ commentIds: [finding.commentId], explanation: 'A distinct defect.' })) }] });
+    return JSON.stringify({ groups: [{ existingGroupIndex: null, rootCause: 'Missing optional-input guard', prevention: 'Guard optional inputs before reading them.', incidents: data.findings.map(finding => ({ existingIncidentIndex: null, commentIds: [finding.commentId], explanation: 'An explicit absence guard fixes this distinct defect.' })) }] });
   } });
 }
 
@@ -51,7 +51,7 @@ test('publishes canonical concise rules and agent references, excluding candidat
   assert.deepEqual(result.files, NAMES.map(name => join(cwd, name)));
   const [rules, agents, claude] = await contents(cwd);
   assert.match(rules, /Guard optional inputs before reading them/);
-  assert.match(rules, /2 independent incidents/);
+  assert.match(rules, /2 verified mistake occurrences/);
   assert.match(rules, /https:\/\/github.com\/acme\/project\/commit\/b{40}/);
   assert.match(rules, /discussion_r0/);
   assert.match(agents, /\[rules.md\]\(rules.md\)/);

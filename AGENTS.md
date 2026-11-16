@@ -4,7 +4,7 @@
 
 Build an installable local CLI for OMP, Claude Code, and Codex. From a local GitHub checkout, capture every accessible pull request (all states) and all discussion comments, inline review comments/replies, and submitted review bodies. Analyze each comment against the reviewed code, subsequent changes, and final PR state. Preserve evidence and explicit unresolved/ignored dispositions; never invent a fix or silently skip comments.
 
-Promote a concise root-cause prevention rule after two independent incidents share that cause. Multiple comments/replies about one defect are one incident. Independent defects in one PR may count separately. One incident stays a candidate. Generalize the prevention, not a filename-specific symptom; merge overlapping rules rather than accumulating duplicates. Output only rules.md, AGENTS.md, and CLAUDE.md as instruction artifacts in the target project. Internal capture/analysis JSON and installed skills are allowed. No runtime gates/hooks in this MVP.
+Promote a concise root-cause prevention rule after two supported mistake occurrences share that cause: independent original defects or fresh substantive feedback after an evidenced relevant failed repair. Unchanged reports, acknowledgements and duplicate same-state reviews count once. Independent defects in one PR may count separately. One occurrence stays a candidate. Generalize the prevention, not a filename-specific symptom; merge overlapping rules rather than accumulating duplicates. Output only rules.md, AGENTS.md, and CLAUDE.md as instruction artifacts in the target project. Internal capture/analysis JSON and installed skills are allowed. No runtime gates/hooks in this MVP.
 
 ## Required development loop
 
