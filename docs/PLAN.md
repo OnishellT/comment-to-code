@@ -2,12 +2,12 @@
 
 ## Scope and success
 
-A user inside a local GitHub checkout can install comment-to-code and its agent skill, capture all accessible PR discussion/review history, analyze every comment with OMP/Claude Code/Codex, and generate a small evidence-backed rules.md plus non-destructive AGENTS.md/CLAUDE.md references. Promotion requires two independent incidents with the same verified root cause. No gates/hooks.
+A user inside a local GitHub checkout can install comment-to-code and its agent skill, capture all accessible PR discussion/review history, analyze every comment with OMP/Claude Code/Codex, and generate a small evidence-backed rules.md plus non-destructive AGENTS.md/CLAUDE.md references. Promotion requires two supported mistake occurrences with the same verified root cause: independent original defects or fresh substantive feedback after an evidenced relevant failed repair. No gates/hooks.
 
 ## Feature issues / independent ownership
 
 1. Capture GitHub evidence: src/capture.js and test/capture.test.js. Own pagination, identity, lifecycle metadata, comments/reviews/replies, commits/patches, reviewed/final code, explicit context limitations. No CLI/analysis changes.
-2. Analyze causes and publish rules: src/analyze.js, src/publish.js, test/analyze.test.js, test/publish.test.js. Own validated comment classifications, root-cause consolidation, independent-incident threshold, candidates, managed Markdown blocks. No capture/runtime changes.
+2. Analyze causes and publish rules: src/analyze.js, src/publish.js, test/analyze.test.js, test/publish.test.js. Own validated comment classifications, root-cause consolidation, two-supported-occurrence threshold, candidates, managed Markdown blocks. No capture/runtime changes.
 3. Installable CLI and isolated agent runners: package.json, bin/, src/agent.js, src/cli.js, src/install.js, install.sh, test/agent.test.js, test/cli.test.js, test/install.test.js, README.md. Own adapters, persistence, commands, project-local skills, installer, public documentation. No capture/analyze/publish changes.
 
 These bounded slices implement one end-to-end feature PR on a new main-based worktree. The parent owns integration, .github/workflows/test.yml, docs, and final smoke verification. All issues are linked from the PR. Implementers verify their completed slices once; the parent verifies the integrated application once and reruns only a failed check after a justified fix.
@@ -50,7 +50,7 @@ Evidence references must resolve to captured comment URLs, PR URLs, or commit SH
 
 `Rule = { id, rootCause, instruction, incidentCount, commentIds: string[], evidence: string[] }`.
 
-The consolidation pass partitions all eligible findings exactly once into root-cause groups and independent incidents; no invented/reused comment IDs. A review thread counts at most once per group, even if the model returns several incidents. Collapse overlapping incidents before applying threshold. Stable IDs derived from normalized content, deterministic ordering. Invalid/omitted/unknown/duplicate references fail analysis without publication. Prior groups are not an additional source of incidents; rerun consolidation on current validated findings so reruns cannot inflate counts.
+The consolidation pass partitions all eligible findings exactly once into root-cause groups and supported mistake occurrences; no invented/reused comment IDs. Count fresh substantive feedback after an evidenced relevant attempted fix, not unchanged reposts, acknowledgements or duplicate same-state reviews. Conservative same-thread canonicalization permits corroborated differing overlapping code windows with ordered comment times, but those artifacts only permit separation: the model must establish a relevant repair attempt and fresh feedback. Same relevant code at another SHA still collapses. Unknown members cannot add stages or bridge otherwise supported stages. Original anchors are not guaranteed current reviewed versions; commit author dates/list membership are not repair chronology. Stable IDs derive from normalized content with deterministic ordering. Invalid/omitted/unknown/duplicate references fail without publication. Prior groups are not additional occurrences; matching checkpoints resume, while stale grouping policy regroups unchanged validated findings.
 
 ### publish.js
 
@@ -75,7 +75,7 @@ Local .comment-to-code data must not become tracked accidentally: installer/firs
 ## Acceptance / real verification
 
 - Paginated offline transport fixtures exercise all PR states, all three comment kinds, replies, commit patches, unavailable code, and GitHub API limits/errors. No silent omission.
-- Analysis fixtures prove every-comment accounting, two independent incidents → one rule, one incident/replies → candidate, distinct defects within one PR, evidence validation, cache invalidation, malformed output, uncertain/rejected fixes, and no duplicate rules on rerun.
+- Analysis fixtures prove every-comment accounting, two supported occurrences → one rule, one occurrence/unchanged replies → candidate, independent original defects within one PR, evidenced fresh failed repairs, duplicate post-attempt reviews, conservative unknown lineage, evidence validation, cache invalidation, malformed output, uncertain/rejected fixes, and no duplicate rules on rerun.
 - Publication preserves user text, is idempotent, rejects malformed markers and symlinks before writes.
 - Each adapter is exercised through real subprocess execution against a fixture executable with exact stdin/output protocol; at least one real installed agent analyzes a small reviewed-code fixture end-to-end. Never call fake fixtures real model verification.
 - Installed package smoke in a temporary checkout: install skills for all three agents, invoke --help, capture a real GitHub project, run an actual model analysis scenario, inspect generated files. No tests asserting source text/wiring only.
@@ -186,3 +186,14 @@ Require one minimal preventive core supported by ALL old and new observed resolu
 Consumer checks cover paired refinement across the16boundary, retained old members, independent recurrence, correctly scoped publication and invalid-pair atomicity/resume. Extend the native fixture to23comments/22eligible: early session-refresh and late render-cache atomic generation-check-and-write defects add a third recurring mechanism; retain optional14IDs/13defects, index2defects, four singleton causes, praise exclusion, unrelated-head citation history, human preservation and zero-call repeat. Move the pre-fix same-thread reproduction to26/2600 to preserve the boundary.
 
 Run focused checks once after edits, read the selective diff and open a draft PR closing25 with explicit blocked native/full-history acceptance. Do not call providers before the reported2026-11-16T02:30Z reset. Parent owns source-frozen native execution, separate installation, complete histories and causal review; no5/5or merge while any remain unverified.
+
+## Issue29 — evidenced failed-repair recurrence
+
+ADR0008 records the owner's explicit count_failed_repairs decision. It supersedes the earlier independent-original-defects-only convention, not causal cohesion, accepted-fix evidence or threshold2. Supply original current/catalog member chronology and relevant noneligible thread/review context with deduplicated shared source/patch tables. Keep capture and normalized finding schemas, v6 hashes, citation feedback, privacy, resource limits, exact coverage, snapshot references and paired refinement unchanged. New grouping instructions/context naturally restart stale grouping state; never rehash old experiments.
+
+Per-call full source/patch payload belongs only to PRs in the current delta; keep all earlier/current captured artifacts within those PRs, including cross-file/pathless evidence. Retain all old member original causes, preventions, resolutions, evidence and comment chronology in the catalog, not old PR code. Global equality/anchor metadata remains private for canonicalization. This is consolidation of previously validated findings, not repeated full-code review. If active-PR complete evidence plus complete catalog/comments exceeds the existing explicit budget, fail before the call rather than truncate or assume the adapter's16MiB byte ceiling is model capacity.
+
+Consumer checks cover same-thread before/partial/final repair, identical code/new SHA and unrelated-change controls, unknown feedback without an extra stage or wildcard bridge, misleading/omitted commit chronology, cross-file/pathless aggregate review, zero-call resume and stale grouping reuse. Preserve all23 native cases and the26/2600 boundary; add4 title-repair comments for27 total/25 eligible, four recurring mechanisms and four unrelated singleton candidates. The extra inline/review of the same partial-fix state counts once, the acknowledgement adds nothing, and the definitely-not-sent fallback remains accepted.
+
+Run focused repository checks once after all changes, then open a draft PR closing29. Parent owns frozen native generation/installation, complete-history replay and independent actual review. Historical53 proposals require fresh judgment under the approved recurrence criterion; this policy change does not correct or endorse every proposal. No provider calls or main merge in this slice.
+

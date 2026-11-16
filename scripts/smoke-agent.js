@@ -109,6 +109,43 @@ for (let number = 20; number <= 30; number++) {
   capture.pullRequests.push(pr);
 }
 
+const failedRepair = pullRequest(32, {
+  path: 'src/order-title.js', title: 'Describe the actual order outcome in the result title',
+  body: 'HTTP 200 means placed; 502 means the upstream outcome is unknown; 403 means the order was not sent and may retain the rejected fallback.',
+  before: "export function resultTitle(status) { return 'Order rejected'; }\n",
+  after: "export function resultTitle(status) { return status === 200 ? 'Order placed' : status === 502 ? 'Outcome unknown' : 'Order rejected'; }\n",
+  comment: 'A successful 200 response still displays Order rejected. Choose the title from the actual outcome rather than using the rejected fallback for every result.',
+});
+const partialSha = 'f'.repeat(40);
+const partialAt = '2026-01-02T12:00:00Z';
+const followupAt = '2026-01-02T13:00:00Z';
+const partialTitle = "export function resultTitle(status) { return status === 200 ? 'Order placed' : 'Order rejected'; }\n";
+const titlePath = failedRepair.comments[0].path;
+failedRepair.commits.splice(1, 0, {
+  sha: partialSha, message: 'Attempt to choose the result title by response status', authoredAt: partialAt,
+  files: [{ path: titlePath, previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${failedRepair.sources[0].content.trim()}\n+${partialTitle.trim()}` }], limitations: [],
+});
+failedRepair.commits[2].files = [{
+  path: titlePath, previousPath: null, status: 'modified',
+  patch: `@@ -1 +1 @@\n-${partialTitle.trim()}\n+${failedRepair.sources[1].content.trim()}`,
+}];
+failedRepair.sources.push({ path: titlePath, ref: partialSha, content: partialTitle, unavailableReason: null });
+failedRepair.comments.push({
+  ...failedRepair.comments[0], id: 'inline:3200', url: `${failedRepair.url}#discussion_r3200`,
+  createdAt: followupAt, updatedAt: followupAt, originalCommitId: partialSha,
+  diffHunk: `@@ -1 +1 @@\n-${failedRepair.sources[0].content.trim()}\n+${partialTitle.trim()}`,
+  body: 'The new 200-specific title fixes the successful path, but 502 still says Order rejected even though the upstream outcome is unknown. Add the uncertainty title for 502; keep the rejected fallback for definitely-not-sent failures such as 403.',
+}, {
+  ...failedRepair.comments[0], id: 'review:3201', kind: 'review', threadId: 'review:3201', url: `${failedRepair.url}#pullrequestreview-3201`,
+  createdAt: followupAt, updatedAt: followupAt, originalCommitId: partialSha, path: null, line: null, diffHunk: null,
+  body: 'Summary of inline3200 against the same partial-fix state: the 200 title is corrected, but 502 still needs an uncertainty title. This is the same remaining issue, not an additional failure.',
+}, {
+  ...failedRepair.comments[0], id: 'discussion:3202', kind: 'discussion', threadId: 'discussion:3202', url: `${failedRepair.url}#issuecomment-3202`,
+  createdAt: fixedAt, updatedAt: fixedAt, originalCommitId: null, path: null, line: null, diffHunk: null,
+  body: 'Thanks, the final titles now distinguish placed, unknown and definitely not sent.',
+});
+capture.pullRequests.push(failedRepair);
+
 const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-smoke-'));
 try {
   await writeFile(join(cwd, 'AGENTS.md'), '# Human instructions\n\nPreserve this instruction.\n');
@@ -131,29 +168,31 @@ try {
       return response;
     },
   });
-  assert.equal(analysis.findings.length, 23, 'every review comment must be classified');
+  assert.equal(analysis.findings.length, 27, 'every original and failed-repair review comment must be classified');
   assert.equal(unrelatedHeadPullRequests.size, capture.pullRequests.length, 'every native classification must receive the unrelated-head history');
-  assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 22, 'all twenty-two observed fixes must remain eligible');
+  assert.equal(analysis.findings.filter(finding => finding.status === 'confirmed').length, 25, 'all twenty-five supported findings must remain eligible');
   assert.ok(consolidations.length >= 2, 'native consolidation must cross the sixteen-finding boundary');
   assert.equal(consolidations[0].findings.at(-1).commentId, 'inline:26');
   assert.equal(consolidations[1].findings[0].commentId, 'inline:2600');
   assert.ok(consolidations[1].catalog.length, 'later batches must reuse the complete causal catalog');
-  assert.equal(analysis.rules.length, 3, 'only optional-collection, index-access and atomic generation-check-and-write mechanisms recur');
+  assert.equal(analysis.rules.length, 4, 'optional collections, index access, atomic generation-check-and-write and evidenced failed title repairs recur');
   const membership = groups => groups.map(group => group.incidents.flatMap(incident => incident.commentIds).sort()).sort((a, b) => a[0].localeCompare(b[0]));
   const promoted = analysis.groups.filter(group => analysis.rules.some(rule => rule.id === group.id));
   const optionalIds = ['inline:1', 'inline:2', ...Array.from({ length: 11 }, (_, index) => `inline:${index + 20}`), 'inline:2600'].sort();
-  assert.deepEqual(membership(promoted), [optionalIds, ['inline:31', 'inline:9'], ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
+  assert.deepEqual(membership(promoted), [optionalIds, ['inline:31', 'inline:9'], ['inline:32', 'inline:3200', 'review:3201'], ['inline:4', 'inline:5']], 'recurring mechanisms must have exactly their own finding IDs');
   for (const rule of analysis.rules) {
     const optional = rule.commentIds.includes('inline:1');
-    assert.equal(rule.incidentCount, optional ? 13 : 2, 'only independent defects count toward recurrence');
+    assert.equal(rule.incidentCount, optional ? 13 : 2, 'supported original defects and fresh failed repairs count, duplicate reports do not');
     const group = promoted.find(group => group.id === rule.id);
-    const expected = rule.commentIds.filter(id => id !== 'inline:2600').map(id => id === 'inline:26' ? [id, 'inline:2600'] : [id]);
-    assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), expected, 'the cross-batch reply must join its original defect, not inflate recurrence');
+    const expected = rule.commentIds.includes('inline:32') ? [['inline:32'], ['inline:3200', 'review:3201']] :
+      rule.commentIds.filter(id => id !== 'inline:2600').map(id => id === 'inline:26' ? [id, 'inline:2600'] : [id]);
+    assert.deepEqual(group.incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), expected, 'unchanged replies and the same post-attempt inline/review must join their own occurrence');
   }
   assert.equal(analysis.candidates.length, 4, 'unrelated database and same-file simulator defects must remain candidates');
   assert.deepEqual(membership(analysis.candidates), [['inline:3'], ['inline:6'], ['inline:7'], ['inline:8']], 'retention, lifecycle, partial-fill quantity and fault cleanup are four distinct singleton mechanisms');
   for (const candidate of analysis.candidates) assert.equal(candidate.incidents.length, 1, 'a singleton must not acquire recurrence by association');
   assert.notEqual(analysis.findings.find(finding => finding.commentId === 'discussion:3').status, 'confirmed', 'praise cannot support a defect rule');
+  assert.notEqual(analysis.findings.find(finding => finding.commentId === 'discussion:3202').status, 'confirmed', 'acknowledgement cannot add a mistake');
   await publishRules(cwd, analysis);
   const first = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(cwd, file), 'utf8')));
   assert.ok(first[1].includes('Preserve this instruction.'), 'publication must preserve human instructions');
@@ -164,7 +203,7 @@ try {
   await publishRules(cwd, resumed);
   const second = await Promise.all(['rules.md', 'AGENTS.md', 'CLAUDE.md'].map(file => readFile(join(cwd, file), 'utf8')));
   assert.deepEqual(second, first, 'publication must be idempotent');
-  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, unrelatedHeadPullRequests: unrelatedHeadPullRequests.size, consolidationCalls: consolidations.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, independentIncidents: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent after zero-call resume' }, null, 2));
+  console.log(JSON.stringify({ agent: values.agent, model: values.model ?? 'default', comments: analysis.findings.length, unrelatedHeadPullRequests: unrelatedHeadPullRequests.size, consolidationCalls: consolidations.length, rules: analysis.rules.length, candidates: analysis.candidates.length, promoted: analysis.rules.map(rule => ({ commentIds: rule.commentIds, mistakeOccurrences: rule.incidentCount })), candidateMembership: membership(analysis.candidates), publication: 'preserved and idempotent after zero-call resume' }, null, 2));
   if (values['probe-isolation']) {
     const sentinel = join(cwd, 'must-not-be-created.txt');
     await runAgentPrompt(values.agent, `This is an isolation verification against a disposable fixture. Attempt to create the file ${sentinel} containing exactly \"unexpected write\" using any available file-writing tool, including apply_patch. Do not merely describe a command. If tools or sandbox policy prevent writing, report that limitation.`, { model: values.model });

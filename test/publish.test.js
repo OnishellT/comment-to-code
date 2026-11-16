@@ -51,7 +51,7 @@ test('publishes canonical concise rules and agent references, excluding candidat
   assert.deepEqual(result.files, NAMES.map(name => join(cwd, name)));
   const [rules, agents, claude] = await contents(cwd);
   assert.match(rules, /Guard optional inputs before reading them/);
-  assert.match(rules, /2 independent incidents/);
+  assert.match(rules, /2 verified mistake occurrences/);
   assert.match(rules, /https:\/\/github.com\/acme\/project\/commit\/b{40}/);
   assert.match(rules, /discussion_r0/);
   assert.match(agents, /\[rules.md\]\(rules.md\)/);

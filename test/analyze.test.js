@@ -250,6 +250,311 @@ test('multiple replies in one thread are deterministically one incident', async 
   assert.deepEqual(result.candidates[0].incidents[0].commentIds, idsOf(result));
 });
 
+function failedRepairCapture() {
+  const input = capture([4]);
+  const pr = input.pullRequests[0];
+  const before = pr.sources[0].content;
+  const partial = 'return input === undefined ? undefined : input.value;';
+  const partialSha = '2'.repeat(40);
+  const originalTime = '2026-01-01T01:00:00Z';
+  const partialTime = '2026-01-01T02:00:00Z';
+  const followupTime = '2026-01-01T03:00:00Z';
+  pr.comments.forEach(comment => {
+    comment.threadId = 'same-repair';
+    comment.createdAt = originalTime;
+    comment.diffHunk = `@@ -0,0 +1 @@\n+${before}`;
+  });
+  pr.comments[0].body = 'Optional inputs may be undefined or null. This dereferences both without a guard.';
+  for (const comment of pr.comments.slice(1, 3)) {
+    comment.createdAt = followupTime;
+    comment.originalCommitId = partialSha;
+    comment.diffHunk = `@@ -1 +1 @@\n-${before}\n+${partial}`;
+    comment.body = 'The undefined-only guard added after my first review still dereferences null. Guard both absent values before reading value.';
+  }
+  pr.comments[2].body = 'Duplicate reproduction of that same partial-fix state: null still throws, while undefined is now guarded.';
+  pr.comments[3].body = 'Thanks, the final optional chaining fix handles both cases.';
+  pr.comments[3].createdAt = '2026-01-01T05:00:00Z';
+  pr.commits[0].authoredAt = '2026-01-01T04:00:00Z';
+  pr.commits.unshift({
+    sha: partialSha, message: 'Attempt to guard absent input', authoredAt: partialTime,
+    files: [{ path: 'input.js', previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${before}\n+${partial}` }], limitations: [],
+  });
+  pr.sources.push({ path: 'input.js', ref: partialSha, content: partial, unavailableReason: null });
+  return input;
+}
+
+function repairClassification(pr, target) {
+  if (target.commentId === 'inline:1:4') return disposition('praise');
+  return {
+    ...confirmed(pr), evidence: [pr.headSha],
+    codeEvidence: [{ ref: pr.headSha, path: 'input.js', quote: '+return input?.value;' }],
+  };
+}
+
+test('fresh same-thread feedback after a captured partial repair promotes at two, not three, and resumes without calls', async t => {
+  const input = failedRepairCapture();
+  let checkpoint;
+  const result = await analyzeCapture(input, {
+    ...fixtureAgent({ classify: repairClassification }),
+    saveConsolidation: async state => { checkpoint = state; },
+  });
+  assert.equal(result.rules.length, 1);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.deepEqual(result.groups[0].incidents.map(incident => incident.commentIds).sort((a, b) => a[0].localeCompare(b[0])), [
+    ['inline:1:1'], ['inline:1:2', 'inline:1:3'],
+  ]);
+  assert.equal(result.findings.find(finding => finding.commentId === 'inline:1:4').status, 'ignored');
+  const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
+  assert.deepEqual(resumed.groups, result.groups);
+  const stale = fixtureAgent({ classifyBatch: () => { throw new Error('v6 findings must remain reusable'); } });
+  const regenerated = await analyzeCapture(input, {
+    ...stale, previous: result, loadConsolidation: async () => ({ ...checkpoint, policyHash: 'a'.repeat(64) }),
+  });
+  assert.equal(stale.calls.length, 1);
+  assert.equal(stale.calls[0].data.targets, undefined);
+  assert.deepEqual(regenerated.groups, result.groups);
+  assert.equal(regenerated.stats.cached, 4);
+  const cwd = await mkdtemp(join(tmpdir(), 'comment-to-code-repair-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await publishRules(cwd, result);
+  const published = await readFile(join(cwd, 'rules.md'), 'utf8');
+  assert.match(published, /2 verified mistake occurrences/);
+  assert.doesNotMatch(published, /independent incidents/);
+});
+
+test('same-thread new SHAs, unrelated changes and unverifiable chronology never manufacture another occurrence', async () => {
+  const controls = [
+    pr => {
+      pr.sources[2].content = pr.sources[0].content;
+      pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = pr.comments[0].diffHunk; });
+      pr.commits[0].files = [{ path: 'README.md', patch: '@@ -0,0 +1 @@\n+# Documentation' }];
+    },
+    pr => {
+      pr.sources[2].content = `${pr.sources[0].content}\n// Unrelated metadata change`;
+      pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = pr.comments[0].diffHunk; });
+    },
+    pr => { pr.sources[2].content = null; pr.sources[2].unavailableReason = 'Not available'; },
+    pr => { pr.comments.slice(1, 3).forEach(comment => { comment.originalCommitId = pr.baseSha; }); },
+    pr => { pr.comments.slice(1, 3).forEach(comment => { comment.createdAt = null; }); },
+    pr => { pr.comments.slice(1, 3).forEach(comment => { comment.createdAt = pr.comments[0].createdAt; }); },
+    pr => { pr.comments.slice(1, 3).forEach(comment => { comment.diffHunk = null; }); },
+  ];
+  for (const mutate of controls) {
+    const input = failedRepairCapture();
+    mutate(input.pullRequests[0]);
+    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+    assert.deepEqual(result.rules, []);
+    assert.equal(result.candidates[0].incidents.length, 1);
+    assert.deepEqual(result.candidates[0].incidents[0].commentIds, ['inline:1:1', 'inline:1:2', 'inline:1:3']);
+  }
+});
+
+test('complete original chronology and shared code reach the catalog across the sixteen-finding boundary', async () => {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  pr.comments.push(...Array.from({ length: 15 }, (_, index) => ({
+    ...pr.comments[0], id: `inline:1:1-${String(index).padStart(2, '0')}`,
+  })));
+  const agent = fixtureAgent({ classify: repairClassification });
+  const result = await analyzeCapture(input, agent);
+  const calls = agent.calls.filter(call => !call.data.targets);
+  assert.deepEqual(calls.map(call => call.data.findings.length), [16, 2]);
+  assert.equal(result.rules[0].incidentCount, 2);
+  assert.equal(result.rules[0].commentIds.length, 18);
+  const data = calls[1].data;
+  assert.deepEqual(data.comments.filter(comment => comment.member).map(comment => comment.commentId), result.findings.filter(finding => finding.status === 'confirmed').map(finding => finding.commentId));
+  assert.equal(data.comments.filter(comment => comment.commentId === 'inline:1:1').length, 1);
+  assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:2').body, pr.comments[1].body);
+  assert.deepEqual(data.comments.find(comment => comment.commentId === 'inline:1:2').capturedAnchor, { startLine: 1, endLine: 1 });
+  assert.equal(data.pullRequests.length, 1);
+  const context = data.pullRequests[0];
+  for (const source of pr.sources) {
+    assert.ok(context.sources.some(artifact => artifact.path === source.path && artifact.refs.includes(source.ref) && artifact.content === source.content));
+  }
+  assert.equal(context.changes.filter(change => change.patch === pr.files[0].patch).length, 1);
+  assert.deepEqual(context.commits, pr.commits.map(({ sha, message, authoredAt }) => ({ sha, message, authoredAt })));
+  assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:4').member, false);
+});
+
+test('unknown feedback neither adds a stage nor bridges supported stages across order, batches and resume', async () => {
+  for (const unknownId of ['inline:1:0', 'inline:1:1z', 'inline:1:9']) {
+    for (const unknownContext of ['missing-ref', 'missing-time', 'other-path']) {
+      for (const acrossBoundary of [false, true]) {
+        const input = failedRepairCapture();
+        const pr = input.pullRequests[0];
+        if (unknownContext === 'missing-ref') Object.assign(pr.comments[2], { id: unknownId, originalCommitId: null, diffHunk: null });
+        else if (unknownContext === 'missing-time') Object.assign(pr.comments[2], { id: unknownId, createdAt: null });
+        else {
+          Object.assign(pr.comments[2], { id: unknownId, path: 'other.js' });
+          pr.sources.push({ ...pr.sources[2], path: 'other.js' });
+        }
+        if (acrossBoundary) pr.comments.push(...Array.from({ length: 15 }, (_, index) => ({
+          ...pr.comments[0], id: `inline:1:1-${String(index).padStart(2, '0')}`,
+        })));
+        let checkpoint;
+        const agent = fixtureAgent({ classify: repairClassification, consolidate: data => {
+          const response = groupFor(data.findings, undefined, data.catalog);
+          response.groups[0].incidents.reverse();
+          return response;
+        } });
+        const result = await analyzeCapture(input, { ...agent, saveConsolidation: async state => { checkpoint = state; } });
+        assert.equal(result.rules[0].incidentCount, 2);
+        assert.equal(result.rules[0].commentIds.length, acrossBoundary ? 18 : 3);
+        assert.ok(result.rules[0].commentIds.includes(unknownId));
+        assert.equal(new Set(result.rules[0].commentIds).size, result.rules[0].commentIds.length);
+        assert.equal(agent.calls.filter(call => !call.data.targets).length, acrossBoundary ? 2 : 1);
+        const resumed = await analyzeCapture(input, { previous: result, loadConsolidation: async () => checkpoint });
+        assert.deepEqual(resumed.groups, result.groups);
+      }
+    }
+  }
+});
+
+test('captured partial repair evidence survives omitted commits and misleading author dates', async () => {
+  for (const mutate of [
+    pr => { pr.commits.shift(); },
+    pr => { pr.commits[0].authoredAt = '2025-12-01T00:00:00Z'; },
+    pr => { pr.commits[0].authoredAt = null; },
+  ]) {
+    const input = failedRepairCapture();
+    mutate(input.pullRequests[0]);
+    const result = await analyzeCapture(input, fixtureAgent({ classify: repairClassification }));
+    assert.equal(result.rules[0].incidentCount, 2);
+  }
+});
+
+test('cross-file repair evidence and pathless duplicate review reach consolidation once with contextual acknowledgements', async () => {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  Object.assign(pr.comments[2], { kind: 'review', threadId: 'aggregate-review', path: null, diffHunk: null });
+  pr.comments[2].body = 'The new undefined guard works, but the same null failure remains. This summarizes the inline review above, not another occurrence.';
+  const file = { path: 'boundary.js', previousPath: null, status: 'modified', patch: '@@ -1 +1 @@\n-export const adapt = x => x;\n+export const adapt = x => x ?? {};' };
+  pr.commits.at(-1).files.push(file);
+  pr.files.push(file);
+  pr.sources.push({ path: 'boundary.js', ref: pr.headSha, content: 'export const adapt = x => x ?? {};', unavailableReason: null });
+  const original = structuredClone(input);
+  const agent = fixtureAgent({
+    classify: (pr, target) => target.commentId === 'inline:1:4' ? disposition('praise') : {
+      ...repairClassification(pr, target),
+      resolution: 'The input boundary normalizes null and undefined before either consumer reads value.',
+      codeEvidence: [{ ref: pr.headSha, path: 'boundary.js', quote: '+export const adapt = x => x ?? {};' }],
+    },
+    consolidate: data => groupFor(data.findings, [['inline:1:1'], ['inline:1:2', 'inline:1:3']]),
+  });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(result.rules[0].incidentCount, 2);
+  const { data } = agent.calls.find(call => !call.data.targets);
+  assert.equal(data.comments.find(comment => comment.kind === 'review').path, null);
+  assert.equal(data.comments.find(comment => comment.commentId === 'inline:1:4').member, false);
+  const context = data.pullRequests[0];
+  assert.ok(context.sources.some(source => source.path === 'boundary.js' && source.content.includes('x ?? {}')));
+  const change = context.changes.find(change => change.path === 'boundary.js');
+  assert.deepEqual(change.refs, [pr.url, pr.headSha]);
+  assert.equal(context.changes.filter(change => change.path === 'boundary.js').length, 1);
+  assert.deepEqual(input, original);
+});
+
+test('available empty source has an equality fingerprint while unavailable source stays unknown', async () => {
+  const input = capture([1]);
+  input.pullRequests[0].comments[0].path = 'empty.js';
+  input.pullRequests[0].commits[0].files.push({ path: 'missing.js', previousPath: null, status: 'modified', patch: null });
+  input.pullRequests[0].sources.push(
+    { path: 'empty.js', ref: 'e'.repeat(40), content: '', unavailableReason: null },
+    { path: 'missing.js', ref: 'f'.repeat(40), content: null, unavailableReason: 'Unavailable' },
+  );
+  const agent = fixtureAgent();
+  await analyzeCapture(input, agent);
+  const sources = agent.calls.find(call => !call.data.targets).data.pullRequests[0].sources;
+  assert.match(sources.find(source => source.path === 'empty.js').fingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(sources.find(source => source.path === 'missing.js').fingerprint, null);
+});
+
+test('complete current PR artifacts survive cross-file context while finished PR code is not retransmitted', async () => {
+  const input = capture([16, 1]);
+  const pr = input.pullRequests[0];
+  pr.comments.forEach(comment => { comment.threadId = 'one-original-defect'; });
+  const unrelatedSha = '3'.repeat(40);
+  const unrelated = { path: 'README.md', previousPath: null, status: 'modified', patch: '@@ -0,0 +1 @@\n+# Unrelated documentation' };
+  pr.commits.push({ sha: unrelatedSha, message: 'Document the API', authoredAt: '2026-01-01T06:00:00Z', files: [unrelated], limitations: [] });
+  pr.files.push(unrelated);
+  pr.sources.push({ path: 'README.md', ref: unrelatedSha, content: '# Unrelated documentation', unavailableReason: null });
+  pr.comments.push({ ...pr.comments[0], id: 'review:old', kind: 'review', threadId: 'review:old', path: null, body: 'Thanks, the final fix resolves this.' });
+  const agent = fixtureAgent({ classify: (pr, target) => target.commentId === 'review:old' ? disposition('praise') : confirmed(pr) });
+  const result = await analyzeCapture(input, agent);
+  const [first, second] = agent.calls.filter(call => !call.data.targets).map(call => call.data);
+  assert.equal(first.pullRequests[0].codeContext, 'complete-captured-pr');
+  assert.ok(first.pullRequests[0].sources.some(source => source.path === 'README.md'));
+  assert.ok(first.pullRequests[0].changes.some(change => change.path === 'README.md'));
+  assert.ok(first.comments.some(comment => comment.commentId === 'review:old' && !comment.member));
+  const old = second.pullRequests.find(context => context.number === 1);
+  assert.equal(old.codeContext, 'prior-validated-findings');
+  assert.equal(old.sources, undefined);
+  assert.equal(old.changes, undefined);
+  assert.equal(second.comments.filter(comment => comment.prNumber === 1 && comment.member).length, 16);
+  assert.equal(second.comments.some(comment => comment.commentId === 'review:old'), false);
+  assert.ok(second.comments.filter(comment => comment.prNumber === 1).every(comment => comment.diffHunk === undefined));
+  const members = second.catalog[0].incidents.flatMap(incident => incident.findings);
+  assert.deepEqual(members.map(({ rootCause, prevention, resolution, evidence }) => ({ rootCause, prevention, resolution, evidence })),
+    result.findings.slice(0, 16).map(({ rootCause, prevention, resolution, evidence }) => ({ rootCause, prevention, resolution, evidence })));
+  const active = second.pullRequests.find(context => context.number === 2);
+  assert.equal(active.codeContext, 'complete-captured-pr');
+  assert.equal(active.sources.length, input.pullRequests[1].sources.length);
+});
+
+test('a PR reentering after sixteen findings retains earlier code and renamed cross-file repair history', async () => {
+  const input = failedRepairCapture();
+  const pr = input.pullRequests[0];
+  const before = pr.sources[0].content;
+  const after = pr.sources[1].content;
+  const partial = pr.sources[2].content;
+  const partialSha = pr.commits[0].sha;
+  pr.comments.push(...Array.from({ length: 15 }, (_, index) => ({
+    ...pr.comments[0], id: `inline:1:1-${String(index).padStart(2, '0')}`,
+  })));
+  pr.comments.slice(1, 3).forEach(comment => { comment.path = 'consumer.js'; comment.threadId = 'fresh-review-after-move'; });
+  pr.commits[0].files = [{ path: 'consumer.js', previousPath: 'input.js', status: 'renamed', patch: `@@ -1 +1 @@\n-${before}\n+${partial}` }];
+  pr.commits[1].files = [{ path: 'consumer.js', previousPath: null, status: 'modified', patch: `@@ -1 +1 @@\n-${partial}\n+${after}` }];
+  pr.files = [{ path: 'consumer.js', previousPath: 'input.js', status: 'renamed', patch: `@@ -1 +1 @@\n-${before}\n+${after}` }];
+  pr.sources = [
+    pr.sources[0],
+    { path: 'consumer.js', ref: partialSha, content: partial, unavailableReason: null },
+    { path: 'consumer.js', ref: pr.headSha, content: after, unavailableReason: null },
+  ];
+  const agent = fixtureAgent({ classify: (pr, target) => target.commentId === 'inline:1:4' ? disposition('praise') : {
+    ...repairClassification(pr, target), codeEvidence: [{ ref: pr.headSha, path: 'consumer.js', quote: `+${after}` }],
+  } });
+  const result = await analyzeCapture(input, agent);
+  assert.equal(result.rules[0].incidentCount, 2);
+  const second = agent.calls.filter(call => !call.data.targets)[1].data;
+  assert.equal(second.pullRequests[0].codeContext, 'complete-captured-pr');
+  assert.ok(second.pullRequests[0].sources.some(source => source.path === 'input.js' && source.content === before));
+  assert.ok(second.pullRequests[0].sources.some(source => source.path === 'consumer.js' && source.refs.includes(partialSha) && source.content === partial));
+  assert.ok(second.pullRequests[0].sources.some(source => source.path === 'consumer.js' && source.refs.includes(pr.headSha) && source.content === after));
+  assert.ok(second.pullRequests[0].changes.some(change => change.path === 'consumer.js' && change.previousPath === 'input.js'));
+  assert.equal(second.comments.find(comment => comment.commentId === 'inline:1:1').diffHunk, pr.comments[0].diffHunk);
+});
+
+test('cross-PR duplicate or unverified lineage can remain one occurrence rather than counting new PR identity', async () => {
+  for (const linked of [true, false]) {
+    const input = capture();
+    input.pullRequests[1].comments[0].body = linked ?
+      `Tracking the same original defect from ${input.pullRequests[0].url}; this is not a separate implementation.` :
+      'The same symptom is reported again, but no captured chronology establishes a new introduction or relevant repair attempt.';
+    const result = await analyzeCapture(input, fixtureAgent({
+      consolidate: data => {
+        const response = groupFor(data.findings, [data.findings.map(finding => finding.commentId)]);
+        response.groups[0].incidents[0].explanation = linked ?
+          'The cross-PR reference tracks the same original absence-guard defect and optional-chaining resolution.' :
+          'The original absence-guard defect is verified, but the captured history establishes no second distinct defect or attempted repair.';
+        return response;
+      },
+    }));
+    assert.deepEqual(result.rules, []);
+    assert.equal(result.candidates[0].incidents.length, 1);
+    assert.deepEqual(result.candidates[0].incidents[0].commentIds, idsOf(result));
+  }
+});
+
 test('semantic consolidation can merge distinct threads discussing the same defect', async () => {
   const agent = fixtureAgent({ consolidate: data => groupFor(data.findings, [data.findings.map(finding => finding.commentId)]) });
   const result = await analyzeCapture(capture([3]), agent);
@@ -763,7 +1068,7 @@ test('bounded consolidation reuses a mechanism beyond sixteen findings and prese
   assert.equal(result.rules[0].commentIds.length, 18);
   assert.deepEqual(result.candidates.map(group => group.incidents[0].commentIds[0]).sort(), ['inline:19:1', 'inline:20:1']);
   const catalogMembers = calls[1].data.catalog[0].incidents.flatMap(incident => incident.findings).sort((a, b) => a.prNumber - b.prNumber);
-  assert.deepEqual(catalogMembers, result.findings.slice(0, 16).map(({ commentId, prNumber, resolution, evidence }) => ({ commentId, prNumber, resolution, evidence })));
+  assert.deepEqual(catalogMembers, result.findings.slice(0, 16).map(({ commentId, prNumber, rootCause, prevention, resolution, evidence }) => ({ commentId, prNumber, rootCause, prevention, resolution, evidence })));
   assert.deepEqual(Object.keys(calls[1].data.threads), idsOf(result));
   assert.deepEqual(calls[1].data.findings, result.findings.slice(16));
 });
